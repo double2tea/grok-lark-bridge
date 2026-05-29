@@ -12,6 +12,12 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout;
 }
 
+class AcpRequestTimeoutError extends Error {
+  constructor(readonly method: string) {
+    super(`Grok ACP request timed out: ${method}`);
+  }
+}
+
 interface ActiveRun {
   readonly onEvent: (event: GrokEvent) => Promise<void>;
   readonly tasks: Promise<void>[];
@@ -48,11 +54,19 @@ export class GrokAcpBackend implements GrokBackend {
   ) {}
 
   close(): void {
-    this.proc?.kill('SIGTERM');
+    const proc = this.proc;
     this.proc = undefined;
     this.initialized = undefined;
     this.rl?.close();
     this.rl = undefined;
+    this.sessions.clear();
+    this.activeRuns.clear();
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(new Error('Grok ACP process closed'));
+    }
+    this.pending.clear();
+    proc?.kill('SIGTERM');
   }
 
   async run(
@@ -92,6 +106,11 @@ export class GrokAcpBackend implements GrokBackend {
       ]);
       await Promise.all(active.tasks);
       return readString(result, 'stopReason') === 'end_turn' ? 0 : 1;
+    } catch (error) {
+      if (error instanceof AcpRequestTimeoutError && error.method === 'session/prompt') {
+        this.close();
+      }
+      throw error;
     } finally {
       if (abort) {
         signal.removeEventListener('abort', abort);
@@ -169,7 +188,7 @@ export class GrokAcpBackend implements GrokBackend {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Grok ACP request timed out: ${method}`));
+        reject(new AcpRequestTimeoutError(method));
       }, timeoutMs);
       this.pending.set(id, {
         resolve,
