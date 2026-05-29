@@ -61,11 +61,7 @@ export class GrokAcpBackend implements GrokBackend {
     this.rl = undefined;
     this.sessions.clear();
     this.activeRuns.clear();
-    for (const request of this.pending.values()) {
-      clearTimeout(request.timer);
-      request.reject(new Error('Grok ACP process closed'));
-    }
-    this.pending.clear();
+    this.rejectPending(new Error('Grok ACP process closed'));
     proc?.kill('SIGTERM');
   }
 
@@ -74,30 +70,37 @@ export class GrokAcpBackend implements GrokBackend {
     onEvent: (event: GrokEvent) => Promise<void>,
     signal: AbortSignal
   ): Promise<number> {
-    await this.ensureInitialized();
-    const session = await this.getOrCreateSession(input);
-    const active: ActiveRun = { onEvent, tasks: [] };
-    this.activeRuns.set(session.acpSessionId, active);
-
+    let session: AcpSession | undefined;
     let abort: (() => void) | undefined;
-    const abortPromise = new Promise<Record<string, unknown>>((_, reject) => {
-      abort = (): void => {
-        void this.cancelSession(session.acpSessionId);
-        reject(new Error('Grok run aborted'));
-      };
-      if (signal.aborted) {
-        abort();
-        return;
-      }
-      signal.addEventListener('abort', abort, { once: true });
-    });
 
     try {
+      await this.ensureInitialized();
+      session = await this.getOrCreateSession(input);
+      const activeSession = session;
+      const active: ActiveRun = { onEvent, tasks: [] };
+      this.activeRuns.set(activeSession.acpSessionId, active);
+
+      const abortPromise = new Promise<Record<string, unknown>>((_, reject) => {
+        abort = (): void => {
+          void this.cancelSession(activeSession.acpSessionId).then((cancelled) => {
+            if (!cancelled) {
+              this.close();
+            }
+          });
+          reject(new Error('Grok run aborted'));
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener('abort', abort, { once: true });
+      });
+
       const result = await Promise.race([
         this.request(
           'session/prompt',
           {
-            sessionId: session.acpSessionId,
+            sessionId: activeSession.acpSessionId,
             prompt: [{ type: 'text', text: buildPrompt(input) }]
           },
           180000
@@ -107,7 +110,7 @@ export class GrokAcpBackend implements GrokBackend {
       await Promise.all(active.tasks);
       return readString(result, 'stopReason') === 'end_turn' ? 0 : 1;
     } catch (error) {
-      if (error instanceof AcpRequestTimeoutError && error.method === 'session/prompt') {
+      if (error instanceof AcpRequestTimeoutError) {
         this.close();
       }
       throw error;
@@ -115,33 +118,45 @@ export class GrokAcpBackend implements GrokBackend {
       if (abort) {
         signal.removeEventListener('abort', abort);
       }
-      this.activeRuns.delete(session.acpSessionId);
+      if (session) {
+        this.activeRuns.delete(session.acpSessionId);
+      }
     }
   }
 
   private async ensureInitialized(): Promise<void> {
-    this.initialized ??= this.initialize();
+    this.initialized ??= this.initialize().catch((error: unknown) => {
+      this.close();
+      throw error;
+    });
     await this.initialized;
   }
 
   private async initialize(): Promise<void> {
-    this.proc = spawn(this.grokBin, ['agent', 'stdio'], {
+    const proc = spawn(this.grokBin, ['agent', 'stdio'], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
-    this.proc.stderr.on('data', (chunk) => {
+    this.proc = proc;
+    proc.stderr.on('data', (chunk) => {
       process.stderr.write(`[grok stderr] ${String(chunk)}`);
     });
-    this.proc.on('exit', () => {
+    proc.on('error', (error) => {
+      if (this.proc === proc) {
+        this.proc = undefined;
+        this.initialized = undefined;
+        this.sessions.clear();
+        this.activeRuns.clear();
+      }
+      this.rejectPending(error);
+    });
+    proc.on('exit', () => {
       this.proc = undefined;
       this.initialized = undefined;
       this.sessions.clear();
-      for (const request of this.pending.values()) {
-        clearTimeout(request.timer);
-        request.reject(new Error('Grok ACP process exited'));
-      }
-      this.pending.clear();
+      this.activeRuns.clear();
+      this.rejectPending(new Error('Grok ACP process exited'));
     });
-    this.rl = readline.createInterface({ input: this.proc.stdout });
+    this.rl = readline.createInterface({ input: proc.stdout });
     this.rl.on('line', (line) => {
       this.handleLine(line);
     });
@@ -195,17 +210,34 @@ export class GrokAcpBackend implements GrokBackend {
         reject,
         timer
       });
-      this.proc?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      const payload = `${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`;
+      try {
+        this.proc?.stdin.write(payload);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
     });
   }
 
-  private async cancelSession(sessionId: string): Promise<void> {
+  private async cancelSession(sessionId: string): Promise<boolean> {
     try {
       await this.request('session/cancel', { sessionId }, 5000);
+      return true;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`[grok stderr] session cancel failed: ${message}\n`);
+      return false;
     }
+  }
+
+  private rejectPending(error: Error): void {
+    for (const request of this.pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+    this.pending.clear();
   }
 
   private bridgeMcpServer(): AcpMcpServer {
