@@ -1,0 +1,15 @@
+{
+  "scopes": {
+    "tenant": [
+      "im:message:send_as_bot",
+      "im:message:readonly",
+      "docx:document",
+      "docx:document:readonly",
+      "task:task",
+      "calendar:calendar.event:create",
+      "bitable:app",
+      "bitable:app:readonly",
+      "contact:contact.base:readonly"
+    ]
+  }
+}

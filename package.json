@@ -1,0 +1,53 @@
+{
+  "name": "grok-lark-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "grok-lark-bridge": "./dist/index.js",
+    "grok-lark-mcp": "./dist/mcp-server.js",
+    "grok-lark-doctor": "./dist/doctor.js",
+    "grok-lark-check-feishu": "./dist/check-feishu.js",
+    "grok-lark-setup": "./dist/setup.js"
+  },
+  "scripts": {
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "mcp:dev": "tsx src/mcp-server.ts",
+    "doctor": "tsx src/doctor.ts",
+    "setup": "tsx src/setup.ts",
+    "feishu:check": "tsx src/check-feishu.ts",
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest --run",
+    "test:coverage": "vitest --run --coverage"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.66.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "better-sqlite3": "12.10.0",
+    "dotenv": "17.2.3",
+    "zod": "4.1.13"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.1",
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "24.10.1",
+    "@vitest/coverage-v8": "4.0.14",
+    "eslint": "9.39.1",
+    "prettier": "3.6.2",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.48.0",
+    "vitest": "4.0.14"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "axios": "1.16.1"
+  }
+}

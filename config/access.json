@@ -1,0 +1,7 @@
+{
+  "adminOpenIds": [],
+  "allowedChatIds": [],
+  "defaultApprovalPolicy": "confirm_write",
+  "approvalOverrides": [],
+  "enableAdvancedOpenApiTool": false
+}
