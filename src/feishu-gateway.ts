@@ -17,13 +17,21 @@ export class FeishuGateway {
       verificationToken: config.feishuVerificationToken
     }).register({
       'im.message.receive_v1': (data: unknown) => {
-        const message = normalizeMessageEvent(data);
-        runInBackground('message event', handlers.onMessage(message));
+        try {
+          const message = normalizeMessageEvent(data);
+          runInBackground('message event', handlers.onMessage(message));
+        } catch (error) {
+          logEventError('message event normalize', error);
+        }
         return {};
       },
       'card.action.trigger': (data: unknown) => {
-        const action = normalizeCardActionEvent(data);
-        runInBackground('card action event', handlers.onCardAction(action));
+        try {
+          const action = normalizeCardActionEvent(data);
+          runInBackground('card action event', handlers.onCardAction(action));
+        } catch (error) {
+          logEventError('card action normalize', error);
+        }
         return {};
       }
     });
@@ -94,9 +102,13 @@ export function normalizeCardActionEvent(data: unknown): IncomingCardAction {
 
 function runInBackground(label: string, task: Promise<void>): void {
   task.catch((error: unknown) => {
-    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    console.error(`Feishu ${label} failed: ${message}`);
+    logEventError(label, error);
   });
+}
+
+function logEventError(label: string, error: unknown): void {
+  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  console.error(`Feishu ${label} failed: ${message}`);
 }
 
 function readContentText(content: string): string {

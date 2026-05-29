@@ -35,6 +35,7 @@ interface PendingBatch {
 
 const messageBatchMs = 1200;
 const grokIdleTimeoutMs = 10 * 60 * 1000;
+const grokFirstOutputTimeoutMs = 90 * 1000;
 const maxDiagnostics = 80;
 const cardUpdateMinIntervalMs = 1500;
 const textUpdateMinIntervalMs = 2000;
@@ -50,6 +51,7 @@ interface OutputTextState {
 
 export class RuntimeOrchestrator {
   private readonly queues = new Map<string, Promise<void>>();
+  private readonly queueVersions = new Map<string, number>();
   private readonly runs = new Map<string, RunState>();
   private readonly pendingBatches = new Map<string, PendingBatch>();
   private readonly diagnostics: string[] = [];
@@ -92,6 +94,7 @@ export class RuntimeOrchestrator {
     const session = this.sessions.getOrCreateFromMessage(message);
     if (message.text.trim() === '/stop') {
       this.clearPendingBatch(session.key);
+      this.cancelQueuedWork(session.key);
       this.stopRun(session.key);
       await this.api.sendText(session.chatId, 'Stopping current run.');
       return;
@@ -242,6 +245,7 @@ export class RuntimeOrchestrator {
     // This avoids extra card flashes and gives a much smoother continuous streaming feel.
 
     const timeoutState = { timedOut: false };
+    const outputState = { hasOutput: false };
     let idleTimer: NodeJS.Timeout | undefined;
     const armIdleWatchdog = (): void => {
       if (idleTimer) {
@@ -267,6 +271,22 @@ export class RuntimeOrchestrator {
       }, grokIdleTimeoutMs);
     };
     armIdleWatchdog();
+    const firstOutputTimer = setTimeout(() => {
+      if (outputState.hasOutput) {
+        return;
+      }
+      timeoutState.timedOut = true;
+      controller.abort();
+      const current = this.runs.get(session.key);
+      void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+        title: 'Grok 长时间无响应',
+        status: 'error',
+        body: 'Grok 已收到任务，但 90 秒内没有返回任何输出；已终止本轮并准备接收下一条消息。'
+      });
+      if (current) {
+        current.agentState = markInterrupted(current.agentState);
+      }
+    }, grokFirstOutputTimeoutMs);
 
     const liveCardMessageId = cardMessageId ?? undefined;
     const liveCard = liveCardMessageId
@@ -289,6 +309,8 @@ export class RuntimeOrchestrator {
 
     const update = (event: GrokEvent): Promise<void> => {
       armIdleWatchdog();
+      outputState.hasOutput = true;
+      clearTimeout(firstOutputTimer);
 
       if (event.type === 'text') {
         outputText.text += event.text;
@@ -377,6 +399,7 @@ export class RuntimeOrchestrator {
       if (idleTimer) {
         clearTimeout(idleTimer);
       }
+      clearTimeout(firstOutputTimer);
       // Persist final structured agent state for potential follow-up card reuse
       const currentRun = this.runs.get(session.key);
       if (currentRun) {
@@ -442,9 +465,21 @@ export class RuntimeOrchestrator {
     this.pendingBatches.delete(key);
     const message = mergeMessages(batch.messages);
     const session = this.sessions.getOrCreateFromMessage(message);
+    const version = this.queueVersions.get(key) ?? 0;
+    if (this.queues.has(key) || this.runs.has(key)) {
+      void this.notifyText(
+        session.chatId,
+        '已收到新消息，已加入当前 Grok 会话队列。',
+        'queue notice'
+      );
+    }
     this.enqueue(
       key,
       async () => {
+        if ((this.queueVersions.get(key) ?? 0) !== version) {
+          this.record('info', `Grok queued work skipped after stop context=${key}`);
+          return;
+        }
         this.record(
           'info',
           `Grok run queued context=${session.key} messages=${String(batch.messages.length)} prompt=${truncate(message.text, 80)}`
@@ -478,6 +513,10 @@ export class RuntimeOrchestrator {
     run.controller.abort();
     run.agentState = markInterrupted(run.agentState);
     this.store.setSessionRun(key, 'stopping', null);
+  }
+
+  private cancelQueuedWork(key: string): void {
+    this.queueVersions.set(key, (this.queueVersions.get(key) ?? 0) + 1);
   }
 
   private async safePatchCard(

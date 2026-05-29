@@ -107,6 +107,30 @@ class FakeGrok implements GrokBackend {
   }
 }
 
+class BlockingGrok implements GrokBackend {
+  readonly prompts: string[] = [];
+  private readonly resolvers: ((code: number) => void)[] = [];
+
+  run(input: GrokRunInput, _onEvent: (event: GrokEvent) => Promise<void>, signal: AbortSignal) {
+    this.prompts.push(input.prompt);
+    return new Promise<number>((resolve) => {
+      const finish = (code: number): void => {
+        signal.removeEventListener('abort', abort);
+        resolve(code);
+      };
+      const abort = (): void => {
+        finish(1);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      this.resolvers.push(finish);
+    });
+  }
+
+  finishNext(code = 0): void {
+    this.resolvers.shift()?.(code);
+  }
+}
+
 describe('RuntimeOrchestrator', () => {
   it('uses current-session wording instead of CLI startup wording', async () => {
     const { orchestrator, api } = createRuntime(new FakeFeishuApi());
@@ -164,6 +188,38 @@ describe('RuntimeOrchestrator', () => {
     await waitFor(() => api.texts.includes('你好呀'));
 
     expect(api.texts).toEqual(['你', '你好呀']);
+  });
+
+  it('shows queued follow-up messages while a run is active', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('第一条', 'evt_1'));
+    await waitFor(() => grok.prompts.length === 1);
+    await orchestrator.handleMessage(message('第二条', 'evt_2'));
+    await waitFor(() => api.texts.includes('已收到新消息，已加入当前 Grok 会话队列。'));
+
+    grok.finishNext();
+    await waitFor(() => grok.prompts.length === 2);
+    grok.finishNext();
+    await waitFor(() => api.cards.at(-1)?.title === 'Grok 执行完成');
+  });
+
+  it('does not run queued messages after stop', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('第一条', 'evt_1'));
+    await waitFor(() => grok.prompts.length === 1);
+    await orchestrator.handleMessage(message('第二条', 'evt_2'));
+    await waitFor(() => api.texts.includes('已收到新消息，已加入当前 Grok 会话队列。'));
+    await orchestrator.handleMessage(message('/stop', 'evt_stop'));
+    await waitFor(() => api.texts.includes('Stopping current run.'));
+    await sleep(50);
+
+    expect(grok.prompts).toEqual(['第一条']);
   });
 });
 
@@ -223,4 +279,10 @@ async function waitFor(check: () => boolean): Promise<void> {
     });
   }
   throw new Error('condition was not met');
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

@@ -44,6 +44,8 @@ const messageCreateResponseSchema = z.object({
     })
     .optional()
 });
+const feishuRequestTimeoutMs = 15000;
+const feishuUploadTimeoutMs = 120000;
 
 export class FeishuApi implements FeishuApiPort {
   private readonly client: lark.Client;
@@ -163,23 +165,31 @@ export class FeishuApi implements FeishuApiPort {
     } = {}
   ): Promise<unknown> {
     return retryOnRateLimit(async () =>
-      this.client.request<unknown>({
-        method,
-        url,
-        params: input.params,
-        data: input.data
-      })
+      withTimeout(
+        this.client.request<unknown>({
+          method,
+          url,
+          params: input.params,
+          data: input.data
+        }),
+        feishuRequestTimeoutMs,
+        `Feishu ${method} ${url} timed out`
+      )
     );
   }
 
   protected async uploadImage(sourcePath: string): Promise<string> {
     const response = await retryOnRateLimit(() =>
-      this.client.im.v1.image.create({
-        data: {
-          image_type: 'message',
-          image: fs.readFileSync(expandHome(sourcePath))
-        }
-      })
+      withTimeout(
+        this.client.im.v1.image.create({
+          data: {
+            image_type: 'message',
+            image: fs.readFileSync(expandHome(sourcePath))
+          }
+        }),
+        feishuUploadTimeoutMs,
+        'Feishu image upload timed out'
+      )
     );
     const imageKey = response?.image_key;
     if (!imageKey) {
@@ -195,14 +205,18 @@ export class FeishuApi implements FeishuApiPort {
     duration?: number
   ): Promise<string> {
     const response = await retryOnRateLimit(() =>
-      this.client.im.v1.file.create({
-        data: {
-          file_type: fileType,
-          file_name: fileName,
-          file: fs.readFileSync(expandHome(sourcePath)),
-          ...(duration === undefined ? {} : { duration })
-        }
-      })
+      withTimeout(
+        this.client.im.v1.file.create({
+          data: {
+            file_type: fileType,
+            file_name: fileName,
+            file: fs.readFileSync(expandHome(sourcePath)),
+            ...(duration === undefined ? {} : { duration })
+          }
+        }),
+        feishuUploadTimeoutMs,
+        'Feishu file upload timed out'
+      )
     );
     const fileKey = response?.file_key;
     if (!fileKey) {
@@ -273,6 +287,20 @@ function cardTemplate(status: FeishuCardUpdate['status']): string {
     case 'info':
       return 'blue';
   }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
 }
 
 async function retryOnRateLimit<T>(operation: () => Promise<T>): Promise<T> {
