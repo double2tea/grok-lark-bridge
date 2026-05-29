@@ -52,6 +52,7 @@ export class CommandRouter {
             `grok session: ${session.grokSessionId}`,
             `run: ${session.runStatus}`,
             `approval: ${session.approvalPolicy}`,
+            `sender open_id: ${message.senderOpenId}`,
             `grok: ${checkGrok(this.config.grokBin)}`
           ].join('\n')
         };

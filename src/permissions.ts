@@ -49,6 +49,63 @@ export const toolDefinitions = [
     target: (input) => `message ${String(input.message_id)}`
   },
   {
+    name: 'lark_msg_send_image',
+    title: 'Send Feishu image',
+    description:
+      'Upload a local image file and send it as an image message. Supports JPEG, PNG, WEBP, GIF, TIFF, BMP and ICO within Feishu limits.',
+    risk: 'write',
+    scopes: ['im:message:send_as_bot'],
+    inputSchema: z.object({
+      ...contextSchema,
+      chat_id: z.string().min(1),
+      file_path: z.string().min(1)
+    }),
+    target: (input) => `image ${String(input.file_path)} to chat ${String(input.chat_id)}`
+  },
+  {
+    name: 'lark_msg_send_file',
+    title: 'Send Feishu file',
+    description: 'Upload a local file and send it as a file message.',
+    risk: 'write',
+    scopes: ['im:message:send_as_bot'],
+    inputSchema: z.object({
+      ...contextSchema,
+      chat_id: z.string().min(1),
+      file_path: z.string().min(1),
+      file_name: z.string().min(1).optional()
+    }),
+    target: (input) => `file ${String(input.file_path)} to chat ${String(input.chat_id)}`
+  },
+  {
+    name: 'lark_msg_send_audio',
+    title: 'Send Feishu audio',
+    description: 'Upload a local OPUS audio file and send it as an audio message.',
+    risk: 'write',
+    scopes: ['im:message:send_as_bot'],
+    inputSchema: z.object({
+      ...contextSchema,
+      chat_id: z.string().min(1),
+      file_path: z.string().min(1),
+      duration: z.number().positive().optional()
+    }),
+    target: (input) => `audio ${String(input.file_path)} to chat ${String(input.chat_id)}`
+  },
+  {
+    name: 'lark_msg_send_video',
+    title: 'Send Feishu video',
+    description: 'Upload a local MP4 file and send it as a video/media message.',
+    risk: 'write',
+    scopes: ['im:message:send_as_bot'],
+    inputSchema: z.object({
+      ...contextSchema,
+      chat_id: z.string().min(1),
+      file_path: z.string().min(1),
+      duration: z.number().positive().optional(),
+      cover_image_key: z.string().min(1).optional()
+    }),
+    target: (input) => `video ${String(input.file_path)} to chat ${String(input.chat_id)}`
+  },
+  {
     name: 'lark_msg_read_history',
     title: 'Read Feishu message history',
     description: 'Read recent messages from a chat through the OpenAPI message list endpoint.',
@@ -160,7 +217,7 @@ export const toolDefinitions = [
     description:
       'After a write tool returned "Approval requested: <id>", the agent can call this (with the same context_key) to retrieve the human decision and result once the approval is resolved in Feishu. This is the mechanism to "wait for the bridge approval result".',
     risk: 'read',
-    scopes: ['im:message:readonly'], // lightweight, no extra scopes needed
+    scopes: [],
     inputSchema: z.object({
       ...contextSchema,
       approval_id: z.string().min(1)

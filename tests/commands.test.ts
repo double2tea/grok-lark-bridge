@@ -37,9 +37,18 @@ describe('CommandRouter', () => {
     expect(result.session?.approvalPolicy).toBe('auto');
     store.close();
   });
+
+  it('allows approval policy changes when admin list is empty', () => {
+    const { router, message, session, store } = makeRouter([]);
+
+    const result = router.handle({ ...message, text: '/approval auto' }, session);
+
+    expect(result.text).toBe('Approval policy set to auto');
+    store.close();
+  });
 });
 
-function makeRouter(): {
+function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
   readonly router: CommandRouter;
   readonly message: IncomingMessage;
   readonly session: SessionRecord;
@@ -55,7 +64,7 @@ function makeRouter(): {
     dataDir: dir,
     defaultWorkspaceRoot: dir,
     access: {
-      adminOpenIds: ['ou_admin'],
+      adminOpenIds,
       allowedChatIds: [],
       defaultApprovalPolicy: 'confirm_write',
       approvalOverrides: [],

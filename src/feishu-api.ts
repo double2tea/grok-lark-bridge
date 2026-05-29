@@ -1,12 +1,23 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { z } from 'zod';
 import type { BridgeConfig, CardAction, FeishuCardUpdate } from './types.js';
-import { sanitizeForCard, truncate } from './utils.js';
+import { expandHome, sanitizeForCard, truncate } from './utils.js';
 
 type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+type FeishuFileType = 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream';
 
 export interface FeishuApiPort {
   sendText(chatId: string, text: string): Promise<string | undefined>;
+  sendImage(chatId: string, sourcePath: string): Promise<string | undefined>;
+  sendFile(chatId: string, sourcePath: string, fileName?: string): Promise<string | undefined>;
+  sendAudio(chatId: string, sourcePath: string, duration?: number): Promise<string | undefined>;
+  sendVideo(
+    chatId: string,
+    sourcePath: string,
+    input?: { readonly duration?: number; readonly coverImageKey?: string }
+  ): Promise<string | undefined>;
   patchText(messageId: string, text: string): Promise<void>;
   sendCard(chatId: string, update: FeishuCardUpdate): Promise<string | undefined>;
   patchCard(messageId: string, update: FeishuCardUpdate): Promise<void>;
@@ -57,6 +68,46 @@ export class FeishuApi implements FeishuApiPort {
       }
     });
     return messageCreateResponseSchema.parse(response).data?.message_id;
+  }
+
+  async sendImage(chatId: string, sourcePath: string): Promise<string | undefined> {
+    const imageKey = await this.uploadImage(sourcePath);
+    return this.sendUploadedMessage(chatId, 'image', { image_key: imageKey });
+  }
+
+  async sendFile(
+    chatId: string,
+    sourcePath: string,
+    fileName = path.basename(sourcePath)
+  ): Promise<string | undefined> {
+    const fileKey = await this.uploadFile(sourcePath, 'stream', fileName);
+    return this.sendUploadedMessage(chatId, 'file', { file_key: fileKey });
+  }
+
+  async sendAudio(
+    chatId: string,
+    sourcePath: string,
+    duration?: number
+  ): Promise<string | undefined> {
+    const fileKey = await this.uploadFile(sourcePath, 'opus', path.basename(sourcePath), duration);
+    return this.sendUploadedMessage(chatId, 'audio', { file_key: fileKey });
+  }
+
+  async sendVideo(
+    chatId: string,
+    sourcePath: string,
+    input: { readonly duration?: number; readonly coverImageKey?: string } = {}
+  ): Promise<string | undefined> {
+    const fileKey = await this.uploadFile(
+      sourcePath,
+      'mp4',
+      path.basename(sourcePath),
+      input.duration
+    );
+    return this.sendUploadedMessage(chatId, 'media', {
+      file_key: fileKey,
+      ...(input.coverImageKey ? { image_key: input.coverImageKey } : {})
+    });
   }
 
   async patchText(messageId: string, text: string): Promise<void> {
@@ -119,6 +170,61 @@ export class FeishuApi implements FeishuApiPort {
         data: input.data
       })
     );
+  }
+
+  protected async uploadImage(sourcePath: string): Promise<string> {
+    const response = await retryOnRateLimit(() =>
+      this.client.im.v1.image.create({
+        data: {
+          image_type: 'message',
+          image: fs.readFileSync(expandHome(sourcePath))
+        }
+      })
+    );
+    const imageKey = response?.image_key;
+    if (!imageKey) {
+      throw new Error('Feishu image upload did not return image_key');
+    }
+    return imageKey;
+  }
+
+  protected async uploadFile(
+    sourcePath: string,
+    fileType: FeishuFileType,
+    fileName: string,
+    duration?: number
+  ): Promise<string> {
+    const response = await retryOnRateLimit(() =>
+      this.client.im.v1.file.create({
+        data: {
+          file_type: fileType,
+          file_name: fileName,
+          file: fs.readFileSync(expandHome(sourcePath)),
+          ...(duration === undefined ? {} : { duration })
+        }
+      })
+    );
+    const fileKey = response?.file_key;
+    if (!fileKey) {
+      throw new Error('Feishu file upload did not return file_key');
+    }
+    return fileKey;
+  }
+
+  private async sendUploadedMessage(
+    chatId: string,
+    msgType: 'image' | 'file' | 'audio' | 'media',
+    content: Record<string, string>
+  ): Promise<string | undefined> {
+    const response = await this.request('POST', '/open-apis/im/v1/messages', {
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: chatId,
+        msg_type: msgType,
+        content: JSON.stringify(content)
+      }
+    });
+    return messageCreateResponseSchema.parse(response).data?.message_id;
   }
 }
 

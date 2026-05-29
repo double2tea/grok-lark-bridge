@@ -36,7 +36,17 @@ npm run setup
 
 4. 在权限管理中批量导入 `config/feishu-permissions.json` 的 tenant scopes，并提交管理员审批。
 
-5. 运行桥接服务：
+5. 可选：配置管理员 open_id：
+
+```json
+{
+  "adminOpenIds": ["你的 open_id"]
+}
+```
+
+可以先给机器人发送 `/status`，返回里的 `sender open_id` 就是当前用户的 open_id。`adminOpenIds` 为空时不限制管理员命令，适合个人或小范围试用；填入 open_id 后才会启用白名单限制。
+
+6. 运行桥接服务：
 
 ```bash
 npm run dev
@@ -99,6 +109,17 @@ Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `request
 - `/mcp tools`
 - `/mcp scopes`
 - `/doctor`
+
+## Media Messages
+
+Grok can send generated local files back to Feishu through MCP tools:
+
+- `lark_msg_send_image`：上传本地图片并发送图片消息。
+- `lark_msg_send_video`：上传本地 MP4 并发送视频消息。
+- `lark_msg_send_audio`：上传本地 OPUS 并发送音频消息。
+- `lark_msg_send_file`：上传本地文件并发送文件消息。
+
+These tools use the Feishu SDK IM upload APIs (`im.v1.image.create` / `im.v1.file.create`) and then send the corresponding message type. They require the bot message permission already used by text messages: `im:message:send_as_bot`.
 
 ## Approval Policy
 

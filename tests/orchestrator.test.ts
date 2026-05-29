@@ -33,14 +33,36 @@ class FakeFeishuApi implements FeishuApiPort {
   readonly texts: string[] = [];
   readonly patchedTexts: string[] = [];
 
-  constructor(private readonly failCards = false) {}
+  constructor(
+    private readonly failCards = false,
+    private readonly failTextPatches = false
+  ) {}
 
   sendText(_chatId: string, text: string): Promise<string | undefined> {
     this.texts.push(text);
     return Promise.resolve('msg_text');
   }
 
+  sendImage(): Promise<string | undefined> {
+    return Promise.resolve('msg_image');
+  }
+
+  sendFile(): Promise<string | undefined> {
+    return Promise.resolve('msg_file');
+  }
+
+  sendAudio(): Promise<string | undefined> {
+    return Promise.resolve('msg_audio');
+  }
+
+  sendVideo(): Promise<string | undefined> {
+    return Promise.resolve('msg_video');
+  }
+
   patchText(_messageId: string, text: string): Promise<void> {
+    if (this.failTextPatches) {
+      return Promise.reject(new Error('edit limit'));
+    }
     this.patchedTexts.push(text);
     return Promise.resolve();
   }
@@ -128,6 +150,20 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.texts).toContain('你');
     expect(api.cards.at(-1)?.body).toContain('文本输出见下方消息');
+  });
+
+  it('does not repeatedly send full text when message editing fails', async () => {
+    const api = new FakeFeishuApi(false, true);
+    const grok = new FakeGrok([
+      { type: 'text', text: '你' },
+      { type: 'text', text: '好' },
+      { type: 'text', text: '呀' }
+    ]);
+    const { orchestrator } = createRuntime(api, grok);
+    await orchestrator.handleMessage(message());
+    await waitFor(() => api.texts.includes('你好呀'));
+
+    expect(api.texts).toEqual(['你', '你好呀']);
   });
 });
 

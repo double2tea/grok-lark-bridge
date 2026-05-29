@@ -65,26 +65,37 @@ export class GrokAcpBackend implements GrokBackend {
     const active: ActiveRun = { onEvent, tasks: [] };
     this.activeRuns.set(session.acpSessionId, active);
 
-    const abort = (): void => {
-      this.proc?.kill('SIGTERM');
-      this.proc = undefined;
-      this.initialized = undefined;
-    };
-    signal.addEventListener('abort', abort, { once: true });
+    let abort: (() => void) | undefined;
+    const abortPromise = new Promise<Record<string, unknown>>((_, reject) => {
+      abort = (): void => {
+        void this.cancelSession(session.acpSessionId);
+        reject(new Error('Grok run aborted'));
+      };
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      signal.addEventListener('abort', abort, { once: true });
+    });
 
     try {
-      const result = await this.request(
-        'session/prompt',
-        {
-          sessionId: session.acpSessionId,
-          prompt: [{ type: 'text', text: buildPrompt(input) }]
-        },
-        180000
-      );
+      const result = await Promise.race([
+        this.request(
+          'session/prompt',
+          {
+            sessionId: session.acpSessionId,
+            prompt: [{ type: 'text', text: buildPrompt(input) }]
+          },
+          180000
+        ),
+        abortPromise
+      ]);
       await Promise.all(active.tasks);
       return readString(result, 'stopReason') === 'end_turn' ? 0 : 1;
     } finally {
-      signal.removeEventListener('abort', abort);
+      if (abort) {
+        signal.removeEventListener('abort', abort);
+      }
       this.activeRuns.delete(session.acpSessionId);
     }
   }
@@ -167,6 +178,15 @@ export class GrokAcpBackend implements GrokBackend {
       });
       this.proc?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
     });
+  }
+
+  private async cancelSession(sessionId: string): Promise<void> {
+    try {
+      await this.request('session/cancel', { sessionId }, 5000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[grok stderr] session cancel failed: ${message}\n`);
+    }
   }
 
   private bridgeMcpServer(): AcpMcpServer {
@@ -423,7 +443,7 @@ function buildPrompt(input: GrokRunInput): string {
     `Feishu requested_by_open_id: ${input.requestedByOpenId}`,
     'When calling any Feishu MCP tool, pass context_key exactly as shown above.',
     'When calling any Feishu MCP tool, pass requested_by_open_id exactly as shown above.',
-    'If a Feishu write tool requires confirmation, wait for the bridge approval result.',
+    'If a Feishu write tool returns "Approval requested: <id>", call lark_get_approval_result with that id until it is approved or rejected.',
     'Treat the user prompt below as the latest message in an ongoing Feishu conversation.',
     '',
     input.prompt

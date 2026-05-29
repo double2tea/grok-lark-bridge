@@ -42,16 +42,24 @@ export class FeishuToolExecutor {
           {
             text: '确认执行',
             type: 'primary',
-            value: { action: 'approval_approve', approval_id: approval.id }
+            value: {
+              action: 'approval_approve',
+              approval_id: approval.id,
+              context_key: contextKey
+            }
           },
           {
             text: '拒绝',
             type: 'danger',
-            value: { action: 'approval_reject', approval_id: approval.id }
+            value: {
+              action: 'approval_reject',
+              approval_id: approval.id,
+              context_key: contextKey
+            }
           }
         ]
       });
-      return this.waitForApprovalResult(approval.id);
+      return { text: `Approval requested: ${approval.id}` };
     }
 
     return this.executeNow(tool.name, input, session);
@@ -83,24 +91,6 @@ export class FeishuToolExecutor {
     this.store.resolvePendingApproval(approvalId, 'rejected', `Approval rejected: ${approvalId}`);
   }
 
-  private async waitForApprovalResult(approvalId: string): Promise<FeishuToolResult> {
-    const startedAt = Date.now();
-    while (Date.now() - startedAt < 10 * 60 * 1000) {
-      const approval = this.store.getPendingApproval(approvalId);
-      if (!approval) {
-        throw new Error(`Unknown approval: ${approvalId}`);
-      }
-      if (approval.status === 'approved') {
-        return { text: approval.resultText ?? '' };
-      }
-      if (approval.status === 'rejected') {
-        throw new Error(approval.resultText ?? `Approval rejected: ${approvalId}`);
-      }
-      await sleep(1000);
-    }
-    throw new Error(`Approval timed out: ${approvalId}`);
-  }
-
   private async executeNow(
     toolName: string,
     input: Record<string, unknown>,
@@ -125,6 +115,40 @@ export class FeishuToolExecutor {
           }
         );
         return { text: 'Message replied.' };
+      case 'lark_msg_send_image': {
+        const messageId = await this.api.sendImage(
+          readRequiredString(input, 'chat_id'),
+          readRequiredString(input, 'file_path')
+        );
+        return { text: JSON.stringify({ message_id: messageId }) };
+      }
+      case 'lark_msg_send_file': {
+        const messageId = await this.api.sendFile(
+          readRequiredString(input, 'chat_id'),
+          readRequiredString(input, 'file_path'),
+          readOptionalString(input, 'file_name')
+        );
+        return { text: JSON.stringify({ message_id: messageId }) };
+      }
+      case 'lark_msg_send_audio': {
+        const messageId = await this.api.sendAudio(
+          readRequiredString(input, 'chat_id'),
+          readRequiredString(input, 'file_path'),
+          readOptionalNumber(input, 'duration')
+        );
+        return { text: JSON.stringify({ message_id: messageId }) };
+      }
+      case 'lark_msg_send_video': {
+        const messageId = await this.api.sendVideo(
+          readRequiredString(input, 'chat_id'),
+          readRequiredString(input, 'file_path'),
+          {
+            duration: readOptionalNumber(input, 'duration'),
+            coverImageKey: readOptionalString(input, 'cover_image_key')
+          }
+        );
+        return { text: JSON.stringify({ message_id: messageId }) };
+      }
       case 'lark_msg_read_history':
         return {
           text: JSON.stringify(
@@ -291,6 +315,17 @@ function readRequiredNumber(input: Record<string, unknown>, key: string): number
   return value;
 }
 
+function readOptionalNumber(input: Record<string, unknown>, key: string): number | undefined {
+  const value = input[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number') {
+    throw new Error(`Expected number: ${key}`);
+  }
+  return value;
+}
+
 function readRecord(input: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = input[key];
   return toRecord(value);
@@ -323,10 +358,4 @@ function toRecord(input: unknown): Record<string, unknown> {
     throw new Error('Expected object input');
   }
   return input as Record<string, unknown>;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

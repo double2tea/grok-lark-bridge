@@ -37,7 +37,16 @@ const messageBatchMs = 1200;
 const grokIdleTimeoutMs = 10 * 60 * 1000;
 const maxDiagnostics = 80;
 const cardUpdateMinIntervalMs = 1500;
-const textUpdateMinIntervalMs = 250;
+const textUpdateMinIntervalMs = 2000;
+
+interface OutputTextState {
+  messageId: string | undefined;
+  text: string;
+  deliveredText: string;
+  announced: boolean;
+  editFailed: boolean;
+  chain: Promise<void>;
+}
 
 export class RuntimeOrchestrator {
   private readonly queues = new Map<string, Promise<void>>();
@@ -182,18 +191,14 @@ export class RuntimeOrchestrator {
 
     session = command.session ?? session;
 
-    // === Proper conversational UX: reuse the last card for this session ===
-    // We persist the active card ID in the session (activeMessageId).
-    // This works both for in-flight runs and for normal follow-ups after previous run completed.
     const previousRun = this.runs.get(session.key);
-    const lastKnownCard = session.activeMessageId || previousRun?.cardMessageId || null;
-    const reusePreviousCard = lastKnownCard !== null;
+    const reusePreviousCard = previousRun?.cardMessageId !== undefined;
 
     let cardMessageId: string | null = null;
     let isNewCardForThisRun = false;
 
-    if (reusePreviousCard) {
-      cardMessageId = lastKnownCard;
+    if (previousRun?.cardMessageId) {
+      cardMessageId = previousRun.cardMessageId;
       isNewCardForThisRun = false;
     } else {
       const initialCard = {
@@ -221,10 +226,9 @@ export class RuntimeOrchestrator {
     const controller = new AbortController();
 
     // Structured state for rich incremental updates (text + tools + status)
-    let agentState: AgentRunState =
-      reusePreviousCard && previousRun
-        ? finalizeIfRunning(previousRun.agentState)
-        : { ...initialAgentState };
+    let agentState: AgentRunState = previousRun
+      ? finalizeIfRunning(previousRun.agentState)
+      : { ...initialAgentState };
 
     this.runs.set(session.key, {
       controller,
@@ -270,14 +274,16 @@ export class RuntimeOrchestrator {
           this.safePatchCard(liveCardMessageId, update, session.chatId)
         )
       : undefined;
-    const outputText = {
-      messageId: undefined as string | undefined,
+    const outputText: OutputTextState = {
+      messageId: undefined,
       text: '',
+      deliveredText: '',
       announced: false,
+      editFailed: false,
       chain: Promise.resolve()
     };
     const liveText = new ThrottledTextUpdater(
-      (text) => this.patchOutputText(outputText.messageId, text, session.chatId),
+      (text) => this.patchOutputText(outputText, text),
       textUpdateMinIntervalMs
     );
 
@@ -342,6 +348,7 @@ export class RuntimeOrchestrator {
       );
       await outputText.chain;
       await liveText.flush();
+      await this.sendFinalOutputFallback(outputText, session.chatId);
       await liveCard?.flush();
 
       // Finalize the structured state
@@ -356,6 +363,7 @@ export class RuntimeOrchestrator {
     } catch (error) {
       await outputText.chain;
       await liveText.flush();
+      await this.sendFinalOutputFallback(outputText, session.chatId);
       await liveCard?.flush();
       if (!timeoutState.timedOut) {
         agentState = markInterrupted(agentState);
@@ -487,24 +495,24 @@ export class RuntimeOrchestrator {
     }
   }
 
-  private async patchOutputText(
-    messageId: string | undefined,
-    text: string,
-    fallbackChatId: string
-  ): Promise<void> {
-    if (!messageId) {
+  private async patchOutputText(output: OutputTextState, text: string): Promise<void> {
+    if (!output.messageId || output.editFailed) {
       return;
     }
     try {
-      await this.api.patchText(messageId, text);
+      await this.api.patchText(output.messageId, text);
+      output.deliveredText = text;
     } catch (error) {
-      this.record('error', `Failed to patch Feishu text ${messageId}: ${describeError(error)}`);
-      await this.notifyText(fallbackChatId, text, 'text patch failure');
+      output.editFailed = true;
+      this.record(
+        'error',
+        `Failed to patch Feishu text ${output.messageId}: ${describeError(error)}`
+      );
     }
   }
 
   private async publishOutputText(
-    output: { messageId: string | undefined; text: string },
+    output: OutputTextState,
     liveText: ThrottledTextUpdater,
     chatId: string
   ): Promise<void> {
@@ -515,6 +523,7 @@ export class RuntimeOrchestrator {
     if (!output.messageId) {
       try {
         output.messageId = await this.api.sendText(chatId, text);
+        output.deliveredText = text;
       } catch (error) {
         this.record(
           'error',
@@ -524,6 +533,18 @@ export class RuntimeOrchestrator {
       return;
     }
     liveText.request(text);
+  }
+
+  private async sendFinalOutputFallback(output: OutputTextState, chatId: string): Promise<void> {
+    if (!output.editFailed) {
+      return;
+    }
+    const text = truncate(output.text, 8000);
+    if (!text || text === output.deliveredText) {
+      return;
+    }
+    await this.notifyText(chatId, text, 'final text fallback');
+    output.deliveredText = text;
   }
 
   private async sendCardOrNotify(
