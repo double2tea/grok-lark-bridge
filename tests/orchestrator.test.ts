@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FeishuApiPort } from '../src/feishu-api.js';
 import { FeishuToolExecutor } from '../src/feishu-tools.js';
 import { GrokRunAbortedError } from '../src/grok.js';
@@ -21,6 +21,7 @@ const dirs: string[] = [];
 const stores: StateStore[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const store of stores.splice(0)) {
     store.close();
   }
@@ -110,6 +111,7 @@ class FakeGrok implements GrokBackend {
 
 class BlockingGrok implements GrokBackend {
   readonly prompts: string[] = [];
+  abortedCount = 0;
   private readonly resolvers: ((code: number) => void)[] = [];
 
   run(input: GrokRunInput, _onEvent: (event: GrokEvent) => Promise<void>, signal: AbortSignal) {
@@ -120,6 +122,7 @@ class BlockingGrok implements GrokBackend {
         resolve(code);
       };
       const abort = (): void => {
+        this.abortedCount += 1;
         signal.removeEventListener('abort', abort);
         reject(new GrokRunAbortedError());
       };
@@ -236,6 +239,20 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.cards.some((card) => card.body.includes('常用命令可以直接点击'))).toBe(true);
     expect(grok.prompts).toEqual(['第一条']);
+  });
+
+  it('warns about no first output without aborting the run', async () => {
+    vi.useFakeTimers();
+    const api = new FakeFeishuApi();
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('需要较长搜索', 'evt_slow'));
+    await vi.advanceTimersByTimeAsync(1200);
+    await vi.advanceTimersByTimeAsync(30000);
+
+    expect(api.cards.at(-1)?.title).toBe('Grok 仍在处理');
+    expect(grok.abortedCount).toBe(0);
   });
 
   it('renders command results as cards', async () => {

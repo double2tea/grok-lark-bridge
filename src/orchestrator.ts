@@ -309,17 +309,11 @@ export class RuntimeOrchestrator {
       if (outputState.hasOutput) {
         return;
       }
-      timeoutState.timedOut = true;
-      controller.abort();
-      const current = this.runs.get(session.key);
       void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-        title: 'Grok 长时间无响应',
-        status: 'error',
-        body: 'Grok 已收到任务，但 30 秒内没有返回任何输出；已终止本轮并准备接收下一条消息。'
+        title: 'Grok 仍在处理',
+        status: 'warning',
+        body: 'Grok 已收到任务，但 30 秒内还没有返回可展示输出；可能正在初始化、搜索或调用工具。你可以继续等待或点击停止。'
       });
-      if (current) {
-        current.agentState = markInterrupted(current.agentState);
-      }
     }, grokFirstOutputTimeoutMs);
 
     const outputText: OutputTextState = {
