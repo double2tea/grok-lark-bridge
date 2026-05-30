@@ -94,6 +94,7 @@ export function normalizeCardActionEvent(data: unknown): IncomingCardAction {
     eventId,
     action: readRequired(value, 'action'),
     approvalId: readString(value, 'approval_id'),
+    command: readString(value, 'command'),
     contextKey: readString(value, 'context_key'),
     operatorOpenId: readString(operator, 'open_id') ?? readString(operator, 'operator_id') ?? '',
     messageId: readString(message, 'message_id')

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FeishuApiPort } from '../src/feishu-api.js';
 import { FeishuToolExecutor } from '../src/feishu-tools.js';
+import { GrokRunAbortedError } from '../src/grok.js';
 import { RuntimeOrchestrator } from '../src/orchestrator.js';
 import { SessionService } from '../src/session.js';
 import { StateStore } from '../src/storage.js';
@@ -113,13 +114,14 @@ class BlockingGrok implements GrokBackend {
 
   run(input: GrokRunInput, _onEvent: (event: GrokEvent) => Promise<void>, signal: AbortSignal) {
     this.prompts.push(input.prompt);
-    return new Promise<number>((resolve) => {
+    return new Promise<number>((resolve, reject) => {
       const finish = (code: number): void => {
         signal.removeEventListener('abort', abort);
         resolve(code);
       };
       const abort = (): void => {
-        finish(1);
+        signal.removeEventListener('abort', abort);
+        reject(new GrokRunAbortedError());
       };
       signal.addEventListener('abort', abort, { once: true });
       this.resolvers.push(finish);
@@ -220,6 +222,32 @@ describe('RuntimeOrchestrator', () => {
     await sleep(50);
 
     expect(grok.prompts).toEqual(['第一条']);
+  });
+
+  it('handles commands immediately while a run is active', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('第一条', 'evt_1'));
+    await waitFor(() => grok.prompts.length === 1);
+    await orchestrator.handleMessage(message('/help', 'evt_help'));
+
+    expect(api.cards.some((card) => card.body.includes('常用命令可以直接点击'))).toBe(true);
+    expect(grok.prompts).toEqual(['第一条']);
+  });
+
+  it('renders manual stop as a stopped run instead of an error', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('第一条', 'evt_1'));
+    await waitFor(() => grok.prompts.length === 1);
+    await orchestrator.handleMessage(message('/stop', 'evt_stop'));
+    await waitFor(() => api.cards.some((card) => card.title === 'Grok 已停止'));
+
+    expect(api.cards.at(-1)?.status).toBe('warning');
   });
 });
 

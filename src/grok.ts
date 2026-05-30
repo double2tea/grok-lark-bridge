@@ -18,6 +18,12 @@ class AcpRequestTimeoutError extends Error {
   }
 }
 
+export class GrokRunAbortedError extends Error {
+  constructor() {
+    super('Grok run aborted');
+  }
+}
+
 interface ActiveRun {
   readonly onEvent: (event: GrokEvent) => Promise<void>;
   readonly tasks: Promise<void>[];
@@ -87,7 +93,7 @@ export class GrokAcpBackend implements GrokBackend {
               this.close();
             }
           });
-          reject(new Error('Grok run aborted'));
+          reject(new GrokRunAbortedError());
         };
         if (signal.aborted) {
           abort();

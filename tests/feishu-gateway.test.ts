@@ -71,4 +71,24 @@ describe('Feishu event normalization', () => {
     expect(action.contextKey).toBe('chat_1');
     expect(action.approvalId).toBeUndefined();
   });
+
+  it('normalizes command card actions', () => {
+    const action = normalizeCardActionEvent({
+      header: { event_id: 'evt_4' },
+      event: {
+        operator: { open_id: 'ou_1' },
+        action: {
+          value: {
+            action: 'run_command',
+            command: '/status',
+            context_key: 'chat_1'
+          }
+        }
+      }
+    });
+
+    expect(action.action).toBe('run_command');
+    expect(action.command).toBe('/status');
+    expect(action.contextKey).toBe('chat_1');
+  });
 });

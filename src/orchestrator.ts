@@ -1,8 +1,10 @@
 import { CommandRouter } from './commands.js';
 import type { FeishuApiPort } from './feishu-api.js';
 import { FeishuToolExecutor } from './feishu-tools.js';
+import { GrokRunAbortedError } from './grok.js';
 import type {
   BridgeConfig,
+  FeishuCardUpdate,
   GrokBackend,
   GrokEvent,
   IncomingCardAction,
@@ -99,6 +101,9 @@ export class RuntimeOrchestrator {
       await this.api.sendText(session.chatId, 'Stopping current run.');
       return;
     }
+    if (await this.executeCommand(message, session)) {
+      return;
+    }
     this.scheduleMessage(message, session);
   }
 
@@ -110,6 +115,23 @@ export class RuntimeOrchestrator {
 
     if (action.action === 'stop_run' && action.contextKey) {
       this.stopRun(action.contextKey);
+      return;
+    }
+    if (action.action === 'run_command' && action.command && action.contextKey) {
+      const session = this.sessions.getOrCreateByKey(action.contextKey);
+      await this.executeCommand(
+        {
+          eventId: action.eventId,
+          chatId: session.chatId,
+          messageId: action.messageId ?? action.eventId,
+          senderOpenId: action.operatorOpenId,
+          chatType: session.threadId ? 'group' : 'p2p',
+          text: action.command,
+          mentionsBot: true,
+          threadId: session.threadId ?? undefined
+        },
+        session
+      );
       return;
     }
     if (!action.approvalId) {
@@ -179,21 +201,27 @@ export class RuntimeOrchestrator {
     }
   }
 
-  private async processMessage(message: IncomingMessage): Promise<void> {
-    let session = this.sessions.getOrCreateFromMessage(message);
+  private async executeCommand(message: IncomingMessage, session: SessionRecord): Promise<boolean> {
     const command = this.commands.handle(message, session);
-    if (command.handled) {
-      if (command.stopRequested) {
-        this.stopRun(session.key);
-      }
-      if (command.text) {
-        await this.api.sendText(session.chatId, command.text);
-      }
-      return;
+    if (!command.handled) {
+      return false;
     }
+    if (command.stopRequested) {
+      this.stopRun(session.key);
+    }
+    const updatedSession = command.session ?? session;
+    if (message.text.trim() === '/help') {
+      await this.api.sendCard(updatedSession.chatId, buildHelpCard(updatedSession.key));
+      return true;
+    }
+    if (command.text) {
+      await this.api.sendText(updatedSession.chatId, command.text);
+    }
+    return true;
+  }
 
-    session = command.session ?? session;
-
+  private async processMessage(message: IncomingMessage): Promise<void> {
+    const session = this.sessions.getOrCreateFromMessage(message);
     const previousRun = this.runs.get(session.key);
     const reusePreviousCard = previousRun?.cardMessageId !== undefined;
 
@@ -389,11 +417,19 @@ export class RuntimeOrchestrator {
       await liveCard?.flush();
       if (!timeoutState.timedOut) {
         agentState = markInterrupted(agentState);
-        await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-          title: 'Grok 执行异常',
-          status: 'error',
-          body: toError(error).message
-        });
+        if (error instanceof GrokRunAbortedError) {
+          await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+            title: 'Grok 已停止',
+            status: 'warning',
+            body: '本轮运行已手动停止。'
+          });
+        } else {
+          await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+            title: 'Grok 执行异常',
+            status: 'error',
+            body: toError(error).message
+          });
+        }
       }
     } finally {
       if (idleTimer) {
@@ -638,6 +674,41 @@ export class RuntimeOrchestrator {
     }
     console.info(message);
   }
+}
+
+function buildHelpCard(contextKey: string): FeishuCardUpdate {
+  return {
+    title: 'Grok Lark Bridge',
+    status: 'info',
+    body: [
+      '常用命令可以直接点击下方按钮。',
+      '',
+      '/cd <path>',
+      '/workspace list|save|use|remove',
+      '/approval confirm_write|confirm_all|auto'
+    ].join('\n'),
+    actions: [
+      commandAction('状态', '/status', contextKey),
+      commandAction('新会话', '/new', contextKey),
+      commandAction('停止', '/stop', contextKey, 'danger'),
+      commandAction('MCP 工具', '/mcp tools', contextKey),
+      commandAction('权限检查', '/mcp scopes', contextKey),
+      commandAction('诊断', '/doctor', contextKey)
+    ]
+  };
+}
+
+function commandAction(
+  text: string,
+  command: string,
+  contextKey: string,
+  type: 'primary' | 'danger' | 'default' = 'default'
+) {
+  return {
+    text,
+    type,
+    value: { action: 'run_command', command, context_key: contextKey }
+  };
 }
 
 function formatCardUpdate(update: Parameters<FeishuApiPort['patchCard']>[1]): string {

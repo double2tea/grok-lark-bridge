@@ -132,6 +132,7 @@ export interface IncomingCardAction {
   readonly eventId: string;
   readonly action: string;
   readonly approvalId?: string;
+  readonly command?: string;
   readonly contextKey?: string;
   readonly operatorOpenId: string;
   readonly messageId?: string;
