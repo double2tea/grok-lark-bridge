@@ -23,32 +23,6 @@ const contextSchema = {
 
 export const toolDefinitions = [
   {
-    name: 'lark_msg_send',
-    title: 'Send Feishu message',
-    description: 'Send a text message as the bot to a chat_id.',
-    risk: 'write',
-    scopes: ['im:message:send_as_bot'],
-    inputSchema: z.object({
-      ...contextSchema,
-      chat_id: z.string().min(1),
-      text: z.string().min(1)
-    }),
-    target: (input) => `chat ${String(input.chat_id)}`
-  },
-  {
-    name: 'lark_msg_reply',
-    title: 'Reply Feishu message',
-    description: 'Reply to a Feishu message_id as the bot.',
-    risk: 'write',
-    scopes: ['im:message:send_as_bot'],
-    inputSchema: z.object({
-      ...contextSchema,
-      message_id: z.string().min(1),
-      text: z.string().min(1)
-    }),
-    target: (input) => `message ${String(input.message_id)}`
-  },
-  {
     name: 'lark_msg_send_image',
     title: 'Send Feishu image',
     description:

@@ -97,24 +97,6 @@ export class FeishuToolExecutor {
     session: SessionRecord
   ): Promise<FeishuToolResult> {
     switch (toolName) {
-      case 'lark_msg_send':
-        await this.api.sendText(
-          readRequiredString(input, 'chat_id'),
-          readRequiredString(input, 'text')
-        );
-        return { text: 'Message sent.' };
-      case 'lark_msg_reply':
-        await this.api.request(
-          'POST',
-          `/open-apis/im/v1/messages/${encodeURIComponent(readRequiredString(input, 'message_id'))}/reply`,
-          {
-            data: {
-              msg_type: 'text',
-              content: JSON.stringify({ text: readRequiredString(input, 'text') })
-            }
-          }
-        );
-        return { text: 'Message replied.' };
       case 'lark_msg_send_image': {
         const messageId = await this.api.sendImage(
           readRequiredString(input, 'chat_id'),

@@ -8,7 +8,8 @@ describe('permissions', () => {
       false
     ).map((tool) => tool.name);
 
-    expect(tools).toContain('lark_msg_send');
+    expect(tools).not.toContain('lark_msg_send');
+    expect(tools).not.toContain('lark_msg_reply');
     expect(tools).toContain('lark_msg_send_image');
     expect(tools).toContain('lark_msg_send_file');
     expect(tools).toContain('lark_msg_send_audio');

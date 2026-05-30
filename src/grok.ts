@@ -498,6 +498,7 @@ function buildPrompt(input: GrokRunInput): string {
     'You are running behind Grok Lark Bridge.',
     `Feishu context_key: ${input.contextKey}`,
     `Feishu requested_by_open_id: ${input.requestedByOpenId}`,
+    'For ordinary chat replies, do not call Feishu MCP tools. Return assistant text normally; the bridge will send it to Feishu.',
     'When calling any Feishu MCP tool, pass context_key exactly as shown above.',
     'When calling any Feishu MCP tool, pass requested_by_open_id exactly as shown above.',
     'If a Feishu write tool returns "Approval requested: <id>", call lark_get_approval_result with that id until it is approved or rejected.',

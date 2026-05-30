@@ -104,7 +104,7 @@ describe('FeishuToolExecutor', () => {
       '/tmp'
     );
     const executor = new FeishuToolExecutor(api, store, sessions);
-    const tool = findTool('lark_msg_send');
+    const tool = findTool('lark_doc_create');
     if (!tool) {
       throw new Error('missing tool');
     }
@@ -112,8 +112,7 @@ describe('FeishuToolExecutor', () => {
     const requested = await executor.call(tool, {
       context_key: 'chat_1',
       requested_by_open_id: 'ou_1',
-      chat_id: 'chat_target',
-      text: 'hello'
+      title: 'Demo doc'
     });
 
     await waitForCard(api);
@@ -130,9 +129,8 @@ describe('FeishuToolExecutor', () => {
 
     expect(JSON.parse(result.text)).toMatchObject({
       status: 'approved',
-      result: 'Message sent.'
+      result: JSON.stringify({ ok: true })
     });
-    expect(api.texts).toEqual(['hello']);
     store.close();
   });
 
