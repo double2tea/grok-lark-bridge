@@ -309,10 +309,27 @@ export class RuntimeOrchestrator {
       if (outputState.hasOutput) {
         return;
       }
-      void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-        title: 'Grok 仍在处理',
-        status: 'warning',
-        body: 'Grok 已收到任务，但 30 秒内还没有返回可展示输出；可能正在初始化、搜索或调用工具。你可以继续等待或点击停止。'
+      const notice: GrokEvent = {
+        type: 'status',
+        text: '30 秒内还没有收到助手文本或具名工具事件；继续等待 Grok。'
+      };
+      agentState = reduceAgentState(agentState, notice);
+      const current = this.runs.get(session.key);
+      if (current) {
+        current.agentState = agentState;
+      }
+      void ensureRunCard().then(() => {
+        const update = {
+          title: 'Grok 仍在处理',
+          status: 'warning' as const,
+          body: toCardBody(agentState),
+          actions: runActions(session.key)
+        };
+        if (liveCard) {
+          liveCard.request(update);
+          return;
+        }
+        void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, update);
       });
     }, grokFirstOutputTimeoutMs);
 
@@ -366,8 +383,10 @@ export class RuntimeOrchestrator {
 
     const update = async (event: GrokEvent): Promise<void> => {
       armIdleWatchdog();
-      outputState.hasOutput = true;
-      clearTimeout(firstOutputTimer);
+      if (event.type !== 'status') {
+        outputState.hasOutput = true;
+        clearTimeout(firstOutputTimer);
+      }
 
       if (event.type === 'text') {
         outputText.text += event.text;
@@ -387,13 +406,7 @@ export class RuntimeOrchestrator {
           title: isNewCardForThisRun ? 'Grok 正在处理' : 'Grok 继续处理',
           status: 'info',
           body,
-          actions: [
-            {
-              text: '停止',
-              type: 'danger',
-              value: { action: 'stop_run', context_key: session.key }
-            }
-          ]
+          actions: runActions(session.key)
         });
       }
       return Promise.resolve();
@@ -714,6 +727,16 @@ function commandActions(contextKey: string) {
     commandAction('MCP 工具', '/mcp tools', contextKey),
     commandAction('权限检查', '/mcp scopes', contextKey),
     commandAction('诊断', '/doctor', contextKey)
+  ];
+}
+
+function runActions(contextKey: string) {
+  return [
+    {
+      text: '停止',
+      type: 'danger' as const,
+      value: { action: 'stop_run', context_key: contextKey }
+    }
   ];
 }
 

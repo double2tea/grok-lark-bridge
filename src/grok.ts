@@ -93,8 +93,18 @@ export class GrokAcpBackend implements GrokBackend {
     let abort: (() => void) | undefined;
 
     try {
+      await onEvent({ type: 'status', text: '正在连接 Grok ACP。' });
       await this.ensureInitialized();
+      await onEvent({ type: 'status', text: 'Grok ACP 已就绪。' });
+      const cachedSession = this.sessions.get(input.sessionId);
       session = await this.getOrCreateSession(input);
+      await onEvent({
+        type: 'status',
+        text:
+          cachedSession && cachedSession.cwd === input.cwd
+            ? `复用 Grok 原生会话 ${shortId(session.acpSessionId)}。`
+            : `已绑定 Grok 原生会话 ${shortId(session.acpSessionId)}。`
+      });
       const activeSession = session;
       const active: ActiveRun = { onEvent, tasks: [] };
       this.activeRuns.set(activeSession.acpSessionId, active);
@@ -116,13 +126,15 @@ export class GrokAcpBackend implements GrokBackend {
       });
 
       const result = await Promise.race([
-        this.request(
-          'session/prompt',
-          {
-            sessionId: activeSession.acpSessionId,
-            prompt: [{ type: 'text', text: buildPrompt(input) }]
-          },
-          180000
+        onEvent({ type: 'status', text: '已发送 prompt，等待 Grok 输出或工具事件。' }).then(() =>
+          this.request(
+            'session/prompt',
+            {
+              sessionId: activeSession.acpSessionId,
+              prompt: [{ type: 'text', text: buildPrompt(input) }]
+            },
+            180000
+          )
         ),
         abortPromise
       ]);
@@ -427,6 +439,10 @@ export function parseAcpUpdate(update: unknown): GrokEvent | undefined {
   if (sessionUpdate === 'agent_message_chunk') {
     return { type: 'text', text: sanitizeForCard(text) };
   }
+  const notice = parseAcpNoticeUpdate(sessionUpdate, update);
+  if (notice) {
+    return notice;
+  }
   return undefined;
 }
 
@@ -452,7 +468,7 @@ function parseAcpToolUpdate(
     readString(toOptionalRecord(update.result), 'text') ??
     name;
   if (isGenericToolNoise(sessionUpdate, name, text)) {
-    return undefined;
+    return { type: 'status', text: formatAcpNotice(sessionUpdate, update) };
   }
   const result = toOptionalRecord(update.result);
   const outputSummary = summarizeToolValue(result) ?? readString(update, 'output');
@@ -471,6 +487,27 @@ function parseAcpToolUpdate(
     durationMs: readDurationMs(update),
     approvalId: readApprovalId(text) ?? readString(update, 'approvalId')
   });
+}
+
+function parseAcpNoticeUpdate(
+  sessionUpdate: string | undefined,
+  update: Record<string, unknown>
+): GrokEvent | undefined {
+  if (!sessionUpdate) {
+    return undefined;
+  }
+  if (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'agent_thought_chunk') {
+    return undefined;
+  }
+  return { type: 'status', text: formatAcpNotice(sessionUpdate, update) };
+}
+
+function formatAcpNotice(sessionUpdate: string, update: Record<string, unknown>): string {
+  const keys = Object.keys(update)
+    .filter((key) => key !== 'sessionUpdate')
+    .slice(0, 4);
+  const suffix = keys.length > 0 ? ` (${keys.join(', ')})` : '';
+  return `收到 Grok 运行事件：${sessionUpdate}${suffix}`;
 }
 
 function isGenericToolNoise(sessionUpdate: string, name: string, text: string): boolean {
@@ -603,6 +640,10 @@ function readDurationMs(record: Record<string, unknown>): number | undefined {
 
 function readApprovalId(text: string): string | undefined {
   return /Approval requested:\s*([A-Za-z0-9_-]+)/u.exec(text)?.[1];
+}
+
+function shortId(id: string): string {
+  return id.length <= 12 ? id : `${id.slice(0, 8)}...${id.slice(-4)}`;
 }
 
 function chooseAuthMethod(init: Record<string, unknown>): string {

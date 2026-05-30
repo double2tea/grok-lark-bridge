@@ -81,12 +81,27 @@ describe('parseAcpUpdate', () => {
     });
   });
 
-  it('ignores generic ACP tool heartbeat updates', () => {
+  it('keeps generic ACP tool updates as backend notices', () => {
     expect(
       parseAcpUpdate({
         sessionUpdate: 'tool_call_update',
         content: { type: 'text', text: 'tool_call_update' }
       })
-    ).toBeUndefined();
+    ).toEqual({
+      type: 'status',
+      text: '收到 Grok 运行事件：tool_call_update (content)'
+    });
+  });
+
+  it('keeps non-tool ACP updates as backend notices', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'session_started',
+        content: { type: 'text', text: 'ready' }
+      })
+    ).toEqual({
+      type: 'status',
+      text: '收到 Grok 运行事件：session_started (content)'
+    });
   });
 });

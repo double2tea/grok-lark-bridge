@@ -250,8 +250,10 @@ describe('RuntimeOrchestrator', () => {
     await orchestrator.handleMessage(message('需要较长搜索', 'evt_slow'));
     await vi.advanceTimersByTimeAsync(1200);
     await vi.advanceTimersByTimeAsync(30000);
+    await vi.advanceTimersByTimeAsync(1500);
 
     expect(api.cards.at(-1)?.title).toBe('Grok 仍在处理');
+    expect(api.cards.at(-1)?.body).toContain('继续等待 Grok');
     expect(grok.abortedCount).toBe(0);
   });
 
