@@ -96,12 +96,15 @@ export type GrokEvent =
       readonly type: 'tool';
       readonly name: string;
       readonly text: string;
+      readonly toolCallId?: string;
       readonly status?: 'running' | 'done' | 'error' | 'pending_approval';
-      readonly kind?: 'command' | 'file_change' | 'web_search' | 'mcp' | 'generic';
+      readonly kind?: 'command' | 'file_change' | 'web_search' | 'mcp' | 'media' | 'generic';
       readonly inputSummary?: string;
       readonly outputSummary?: string;
       readonly durationMs?: number;
       readonly approvalId?: string;
+      readonly artifactPath?: string;
+      readonly artifactUrl?: string;
     }
   | { readonly type: 'status'; readonly text: string };
 

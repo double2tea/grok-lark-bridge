@@ -428,18 +428,18 @@ export function parseAcpUpdate(update: unknown): GrokEvent | undefined {
   if (toolEvent) {
     return toolEvent;
   }
+  const notice = parseAcpNoticeUpdate(sessionUpdate, update);
   const content = update.content;
   if (!isRecord(content)) {
-    return undefined;
+    return notice;
   }
   const text = readString(content, 'text');
   if (!text) {
-    return undefined;
+    return notice;
   }
   if (sessionUpdate === 'agent_message_chunk') {
     return { type: 'text', text: sanitizeForCard(text) };
   }
-  const notice = parseAcpNoticeUpdate(sessionUpdate, update);
   if (notice) {
     return notice;
   }
@@ -456,36 +456,42 @@ function parseAcpToolUpdate(
   if (!sessionUpdate.includes('tool')) {
     return undefined;
   }
+  const toolCall = toOptionalRecord(update.toolCall);
+  const toolCallId = readString(update, 'toolCallId') ?? readString(toolCall, 'id');
+  const title = readString(update, 'title') ?? readString(toolCall, 'title');
+  const rawInput = update.rawInput ?? update.args ?? update.input ?? toolCall.arguments;
+  const rawOutput = update.rawOutput ?? update.output ?? update.result;
+  const kind = readString(update, 'kind');
   const name =
+    title ??
     readString(update, 'toolName') ??
     readString(update, 'name') ??
-    readString(toOptionalRecord(update.toolCall), 'name') ??
+    readString(toolCall, 'name') ??
     sessionUpdate;
   const text =
     readString(update, 'text') ??
-    readString(toOptionalRecord(update.content), 'text') ??
-    readString(toOptionalRecord(update.toolCall), 'arguments') ??
-    readString(toOptionalRecord(update.result), 'text') ??
+    summarizeToolValue(update.content) ??
+    summarizeToolValue(rawInput) ??
+    summarizeToolValue(rawOutput) ??
     name;
-  if (isGenericToolNoise(sessionUpdate, name, text)) {
+  if (isGenericToolNoise(sessionUpdate, name, text, update)) {
     return { type: 'status', text: formatAcpNotice(sessionUpdate, update) };
   }
-  const result = toOptionalRecord(update.result);
-  const outputSummary = summarizeToolValue(result) ?? readString(update, 'output');
-  const inputSummary =
-    summarizeToolValue(update.args) ??
-    summarizeToolValue(update.input) ??
-    summarizeToolValue(toOptionalRecord(update.toolCall).arguments);
+  const outputSummary = summarizeToolValue(rawOutput);
+  const inputSummary = summarizeToolValue(rawInput);
   return compactToolEvent({
     type: 'tool',
     name,
     text: sanitizeForCard(text),
-    status: inferToolStatus(sessionUpdate, update, text),
-    kind: inferToolKind(name),
+    toolCallId,
+    status: inferToolStatus(sessionUpdate, update, text, rawOutput),
+    kind: inferToolKind(kind ?? name),
     inputSummary,
     outputSummary,
     durationMs: readDurationMs(update),
-    approvalId: readApprovalId(text) ?? readString(update, 'approvalId')
+    approvalId: readApprovalId(text) ?? readString(update, 'approvalId'),
+    artifactPath: extractImagePath(rawOutput) ?? extractImagePath(update.content),
+    artifactUrl: extractImageUrl(rawOutput) ?? extractImageUrl(update.content)
   });
 }
 
@@ -510,9 +516,23 @@ function formatAcpNotice(sessionUpdate: string, update: Record<string, unknown>)
   return `收到 Grok 运行事件：${sessionUpdate}${suffix}`;
 }
 
-function isGenericToolNoise(sessionUpdate: string, name: string, text: string): boolean {
+function isGenericToolNoise(
+  sessionUpdate: string,
+  name: string,
+  text: string,
+  update: Record<string, unknown>
+): boolean {
   const generic = new Set(['tool_call', 'tool_call_update']);
   if (!generic.has(sessionUpdate)) {
+    return false;
+  }
+  if (
+    readString(update, 'toolCallId') ||
+    readString(update, 'title') ||
+    update.rawInput !== undefined ||
+    update.rawOutput !== undefined ||
+    update.status !== undefined
+  ) {
     return false;
   }
   return generic.has(name) || text === sessionUpdate;
@@ -544,7 +564,7 @@ export function parseStreamingLine(line: string): GrokEvent | undefined {
       type: 'tool',
       name,
       text: sanitizeForCard(text),
-      status: isRecord(parsed) ? inferToolStatus(type, parsed, text) : 'running',
+      status: isRecord(parsed) ? inferToolStatus(type, parsed, text, parsed.output) : 'running',
       kind: inferToolKind(name),
       inputSummary,
       outputSummary,
@@ -560,30 +580,37 @@ function compactToolEvent(event: ToolEvent): ToolEvent {
     type: 'tool';
     name: string;
     text: string;
+    toolCallId?: string;
     status?: ToolEventStatus;
     kind?: ToolKind;
     inputSummary?: string;
     outputSummary?: string;
     durationMs?: number;
     approvalId?: string;
+    artifactPath?: string;
+    artifactUrl?: string;
   } = {
     type: 'tool',
     name: event.name,
     text: event.text
   };
+  if (event.toolCallId !== undefined) result.toolCallId = event.toolCallId;
   if (event.status !== undefined) result.status = event.status;
   if (event.kind !== undefined && event.kind !== 'generic') result.kind = event.kind;
   if (event.inputSummary !== undefined) result.inputSummary = event.inputSummary;
   if (event.outputSummary !== undefined) result.outputSummary = event.outputSummary;
   if (event.durationMs !== undefined) result.durationMs = event.durationMs;
   if (event.approvalId !== undefined) result.approvalId = event.approvalId;
+  if (event.artifactPath !== undefined) result.artifactPath = event.artifactPath;
+  if (event.artifactUrl !== undefined) result.artifactUrl = event.artifactUrl;
   return result;
 }
 
 function inferToolStatus(
   eventType: string,
   payload: Record<string, unknown>,
-  text: string
+  text: string,
+  rawOutput?: unknown
 ): ToolEventStatus | undefined {
   const explicit = readString(payload, 'status');
   const haystack = `${eventType} ${explicit ?? ''} ${text}`.toLowerCase();
@@ -591,7 +618,10 @@ function inferToolStatus(
   if (haystack.includes('pending_approval')) return 'pending_approval';
   if (haystack.includes('failed') || haystack.includes('error')) return 'error';
   if (haystack.includes('completed') || haystack.includes('complete')) return 'done';
-  if (haystack.includes('result') || payload.result !== undefined) return 'done';
+  if (haystack.includes('success') || haystack.includes('succeeded')) return 'done';
+  if (haystack.includes('result') || payload.result !== undefined || rawOutput !== undefined) {
+    return 'done';
+  }
   if (haystack.includes('started') || haystack.includes('call')) return 'running';
   return undefined;
 }
@@ -599,6 +629,7 @@ function inferToolStatus(
 function inferToolKind(name: string): ToolKind | undefined {
   const lower = name.toLowerCase();
   if (lower.includes('search') || lower.includes('web')) return 'web_search';
+  if (lower.includes('image') || lower.includes('media') || lower.includes('photo')) return 'media';
   if (lower.includes('write') || lower.includes('edit') || lower.includes('diff')) {
     return 'file_change';
   }
@@ -614,6 +645,10 @@ function summarizeToolValue(value: unknown): string | undefined {
     const text = sanitizeForCard(value);
     return text ? text.slice(0, 160) : undefined;
   }
+  if (Array.isArray(value)) {
+    const json = JSON.stringify(value);
+    return json.length > 0 ? sanitizeForCard(json).slice(0, 160) : undefined;
+  }
   if (!isRecord(value)) {
     return undefined;
   }
@@ -626,6 +661,79 @@ function summarizeToolValue(value: unknown): string | undefined {
   }
   const json = JSON.stringify(value);
   return json.length > 0 ? sanitizeForCard(json).slice(0, 160) : undefined;
+}
+
+function extractImagePath(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return isImagePath(value) ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractImagePath(item);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ['file_path', 'filePath', 'image_path', 'imagePath', 'path', 'localPath']) {
+    const item = readString(value, key);
+    if (item && isImagePath(item)) {
+      return item;
+    }
+  }
+  for (const item of Object.values(value)) {
+    const found = extractImagePath(item);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function extractImageUrl(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    return isHttpUrl(value) ? value : undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractImageUrl(item);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of ['image_url', 'imageUrl', 'url']) {
+    const item = readString(value, key);
+    if (item && isHttpUrl(item)) {
+      return item;
+    }
+  }
+  for (const item of Object.values(value)) {
+    const found = extractImageUrl(item);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function isImagePath(value: string): boolean {
+  if (isHttpUrl(value)) {
+    return false;
+  }
+  return /\.(?:png|jpe?g|gif|webp|bmp)$/iu.test(value);
+}
+
+function isHttpUrl(value: string): boolean {
+  return /^https?:\/\//u.test(value);
 }
 
 function readDurationMs(record: Record<string, unknown>): number | undefined {

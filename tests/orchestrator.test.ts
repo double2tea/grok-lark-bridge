@@ -34,6 +34,7 @@ class FakeFeishuApi implements FeishuApiPort {
   readonly cards: FeishuCardUpdate[] = [];
   readonly texts: string[] = [];
   readonly patchedTexts: string[] = [];
+  readonly images: string[] = [];
 
   constructor(
     private readonly failCards = false,
@@ -45,7 +46,8 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve('msg_text');
   }
 
-  sendImage(): Promise<string | undefined> {
+  sendImage(_chatId: string, sourcePath: string): Promise<string | undefined> {
+    this.images.push(sourcePath);
     return Promise.resolve('msg_image');
   }
 
@@ -255,6 +257,50 @@ describe('RuntimeOrchestrator', () => {
     expect(api.cards.at(-1)?.title).toBe('Grok 仍在处理');
     expect(api.cards.at(-1)?.body).toContain('继续等待 Grok');
     expect(grok.abortedCount).toBe(0);
+  });
+
+  it('sends local image artifacts returned by Grok tools', async () => {
+    const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-artifact-'));
+    dirs.push(artifactDir);
+    const imagePath = path.join(artifactDir, 'venus.png');
+    fs.writeFileSync(imagePath, 'png');
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok([
+      {
+        type: 'tool',
+        name: 'Generate image',
+        text: 'done',
+        status: 'done',
+        kind: 'media',
+        artifactPath: imagePath
+      }
+    ]);
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('生成图片', 'evt_image'));
+    await waitFor(() => api.images.includes(imagePath));
+
+    expect(api.cards.at(-1)?.body).toContain('已发送图片：venus.png');
+  });
+
+  it('explains image artifact URLs instead of silently dropping them', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok([
+      {
+        type: 'tool',
+        name: 'Generate image',
+        text: 'done',
+        status: 'done',
+        kind: 'media',
+        artifactUrl: 'https://example.com/venus.png'
+      }
+    ]);
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('生成图片', 'evt_image_url'));
+    await waitFor(() => api.cards.some((card) => card.body.includes('图片 URL')));
+
+    expect(api.images).toEqual([]);
   });
 
   it('renders command results as cards', async () => {

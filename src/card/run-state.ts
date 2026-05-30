@@ -5,6 +5,7 @@ export type ToolStatus = 'running' | 'done' | 'error' | 'pending_approval';
 export interface ToolEntry {
   id: string;
   name: string;
+  toolCallId?: string;
   kind: NonNullable<Extract<GrokEvent, { type: 'tool' }>['kind']>;
   inputSummary: string;
   status: ToolStatus;
@@ -85,9 +86,9 @@ export function reduce(state: RunState, event: GrokEvent): RunState {
       const status = event.status ?? 'running';
       const output =
         event.outputSummary ?? (status === 'done' || status === 'error' ? event.text : undefined);
-      const existingIndex = findLastRunningToolIndex(state.blocks, name);
+      const existingIndex = findLastRunningToolIndex(state.blocks, name, event.toolCallId);
 
-      if (existingIndex >= 0 && status !== 'running') {
+      if (existingIndex >= 0) {
         const block = state.blocks[existingIndex];
         if (block.kind !== 'tool') {
           return state;
@@ -97,6 +98,7 @@ export function reduce(state: RunState, event: GrokEvent): RunState {
           tool: {
             ...block.tool,
             status,
+            inputSummary: event.inputSummary ?? block.tool.inputSummary,
             output: output ? output.slice(0, 200) : block.tool.output,
             durationMs: event.durationMs ?? block.tool.durationMs,
             approvalId: event.approvalId ?? block.tool.approvalId
@@ -109,15 +111,18 @@ export function reduce(state: RunState, event: GrokEvent): RunState {
             updated,
             ...state.blocks.slice(existingIndex + 1)
           ],
-          footer: status === 'pending_approval' ? 'waiting_approval' : null
+          footer: footerForToolStatus(status)
         };
       }
 
       const summary = event.inputSummary ?? (event.text ? summarizeInput(event.text) : name);
 
       const tool: ToolEntry = {
-        id: `tool_${String(Date.now())}_${Math.random().toString(36).slice(2, 8)}`,
+        id:
+          event.toolCallId ??
+          `tool_${String(Date.now())}_${Math.random().toString(36).slice(2, 8)}`,
         name,
+        toolCallId: event.toolCallId,
         kind: event.kind ?? 'generic',
         inputSummary: summary,
         status,
@@ -129,7 +134,7 @@ export function reduce(state: RunState, event: GrokEvent): RunState {
       return {
         ...state,
         blocks: [...closeStreamingText(state.blocks), { kind: 'tool', tool }],
-        footer: status === 'pending_approval' ? 'waiting_approval' : 'tool_running'
+        footer: footerForToolStatus(status)
       };
     }
 
@@ -265,10 +270,30 @@ function formatDuration(durationMs: number): string {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
-function findLastRunningToolIndex(blocks: readonly Block[], name: string): number {
+function footerForToolStatus(status: ToolStatus): FooterStatus {
+  if (status === 'pending_approval') {
+    return 'waiting_approval';
+  }
+  if (status === 'running') {
+    return 'tool_running';
+  }
+  return null;
+}
+
+function findLastRunningToolIndex(
+  blocks: readonly Block[],
+  name: string,
+  toolCallId: string | undefined
+): number {
   for (let index = blocks.length - 1; index >= 0; index -= 1) {
     const block = blocks[index];
-    if (block.kind === 'tool' && block.tool.name === name && block.tool.status === 'running') {
+    if (block.kind !== 'tool' || block.tool.status !== 'running') {
+      continue;
+    }
+    if (toolCallId && block.tool.toolCallId === toolCallId) {
+      return index;
+    }
+    if (!toolCallId && block.tool.name === name) {
       return index;
     }
   }

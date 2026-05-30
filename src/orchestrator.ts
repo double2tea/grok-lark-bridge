@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { CommandRouter } from './commands.js';
 import type { FeishuApiPort } from './feishu-api.js';
 import { FeishuToolExecutor } from './feishu-tools.js';
@@ -280,6 +282,7 @@ export class RuntimeOrchestrator {
 
     const timeoutState = { timedOut: false };
     const outputState = { hasOutput: false };
+    const deliveredArtifactPaths = new Set<string>();
     let idleTimer: NodeJS.Timeout | undefined;
     const armIdleWatchdog = (): void => {
       if (idleTimer) {
@@ -408,6 +411,62 @@ export class RuntimeOrchestrator {
           body,
           actions: runActions(session.key)
         });
+      }
+      if (event.type === 'tool' && event.artifactUrl && !event.artifactPath) {
+        agentState = reduceAgentState(agentState, {
+          type: 'status',
+          text: `Grok 返回了图片 URL，但当前只自动发送本地图片文件：${event.artifactUrl}`
+        });
+        liveCard?.request({
+          title: 'Grok 继续处理',
+          status: 'warning',
+          body: toCardBody(agentState),
+          actions: runActions(session.key)
+        });
+      }
+      if (event.type === 'tool' && event.artifactPath) {
+        const artifactPath = resolveArtifactPath(session.cwd, event.artifactPath);
+        if (deliveredArtifactPaths.has(artifactPath)) {
+          return Promise.resolve();
+        }
+        deliveredArtifactPaths.add(artifactPath);
+        if (!fs.existsSync(artifactPath)) {
+          agentState = reduceAgentState(agentState, {
+            type: 'status',
+            text: `Grok 返回了图片路径，但文件不存在：${artifactPath}`
+          });
+          liveCard?.request({
+            title: 'Grok 继续处理',
+            status: 'warning',
+            body: toCardBody(agentState),
+            actions: runActions(session.key)
+          });
+          return Promise.resolve();
+        }
+        try {
+          await this.api.sendImage(session.chatId, artifactPath);
+          agentState = reduceAgentState(agentState, {
+            type: 'status',
+            text: `已发送图片：${path.basename(artifactPath)}`
+          });
+          liveCard?.request({
+            title: 'Grok 继续处理',
+            status: 'info',
+            body: toCardBody(agentState),
+            actions: runActions(session.key)
+          });
+        } catch (error) {
+          agentState = reduceAgentState(agentState, {
+            type: 'status',
+            text: `图片发送失败：${toError(error).message}`
+          });
+          liveCard?.request({
+            title: 'Grok 继续处理',
+            status: 'warning',
+            body: toCardBody(agentState),
+            actions: runActions(session.key)
+          });
+        }
       }
       return Promise.resolve();
     };
@@ -791,6 +850,10 @@ function toHybridCardBody(state: AgentRunState, hasTextOutput: boolean): string 
     return '文本输出见下方消息。';
   }
   return `文本输出见下方消息。\n\n${body}`;
+}
+
+function resolveArtifactPath(cwd: string, artifactPath: string): string {
+  return path.isAbsolute(artifactPath) ? artifactPath : path.resolve(cwd, artifactPath);
 }
 
 function mergeMessages(messages: readonly IncomingMessage[]): IncomingMessage {
