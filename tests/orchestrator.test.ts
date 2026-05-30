@@ -218,7 +218,7 @@ describe('RuntimeOrchestrator', () => {
     await orchestrator.handleMessage(message('第二条', 'evt_2'));
     await waitFor(() => api.texts.includes('已收到新消息，已加入当前 Grok 会话队列。'));
     await orchestrator.handleMessage(message('/stop', 'evt_stop'));
-    await waitFor(() => api.texts.includes('Stopping current run.'));
+    await waitFor(() => api.cards.some((card) => card.title === 'Grok 已停止'));
     await sleep(50);
 
     expect(grok.prompts).toEqual(['第一条']);
@@ -235,6 +235,17 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.cards.some((card) => card.body.includes('常用命令可以直接点击'))).toBe(true);
     expect(grok.prompts).toEqual(['第一条']);
+  });
+
+  it('renders command results as cards', async () => {
+    const api = new FakeFeishuApi();
+    const { orchestrator } = createRuntime(api);
+
+    await orchestrator.handleMessage(message('/doctor', 'evt_doctor'));
+
+    expect(api.texts).toEqual([]);
+    expect(api.cards.at(-1)?.title).toBe('Bridge 诊断');
+    expect(api.cards.at(-1)?.actions?.length).toBeGreaterThan(0);
   });
 
   it('renders manual stop as a stopped run instead of an error', async () => {

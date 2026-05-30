@@ -37,7 +37,7 @@ interface PendingBatch {
 
 const messageBatchMs = 1200;
 const grokIdleTimeoutMs = 10 * 60 * 1000;
-const grokFirstOutputTimeoutMs = 90 * 1000;
+const grokFirstOutputTimeoutMs = 30 * 1000;
 const maxDiagnostics = 80;
 const cardUpdateMinIntervalMs = 1500;
 const textUpdateMinIntervalMs = 2000;
@@ -97,8 +97,7 @@ export class RuntimeOrchestrator {
     if (message.text.trim() === '/stop') {
       this.clearPendingBatch(session.key);
       this.cancelQueuedWork(session.key);
-      this.stopRun(session.key);
-      await this.api.sendText(session.chatId, 'Stopping current run.');
+      await this.executeCommand(message, session);
       return;
     }
     if (await this.executeCommand(message, session)) {
@@ -202,7 +201,18 @@ export class RuntimeOrchestrator {
   }
 
   private async executeCommand(message: IncomingMessage, session: SessionRecord): Promise<boolean> {
-    const command = this.commands.handle(message, session);
+    let command: ReturnType<CommandRouter['handle']>;
+    try {
+      command = this.commands.handle(message, session);
+    } catch (error) {
+      await this.sendCardOrNotify(session.chatId, {
+        title: '命令执行失败',
+        status: 'error',
+        body: toError(error).message,
+        actions: commandActions(session.key)
+      });
+      return true;
+    }
     if (!command.handled) {
       return false;
     }
@@ -211,11 +221,16 @@ export class RuntimeOrchestrator {
     }
     const updatedSession = command.session ?? session;
     if (message.text.trim() === '/help') {
-      await this.api.sendCard(updatedSession.chatId, buildHelpCard(updatedSession.key));
+      await this.sendCardOrNotify(updatedSession.chatId, buildHelpCard(updatedSession.key));
       return true;
     }
     if (command.text) {
-      await this.api.sendText(updatedSession.chatId, command.text);
+      await this.sendCardOrNotify(updatedSession.chatId, {
+        title: commandTitle(message.text),
+        status: command.stopRequested ? 'warning' : 'info',
+        body: command.text,
+        actions: commandActions(updatedSession.key)
+      });
     }
     return true;
   }
@@ -309,7 +324,7 @@ export class RuntimeOrchestrator {
       void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
         title: 'Grok 长时间无响应',
         status: 'error',
-        body: 'Grok 已收到任务，但 90 秒内没有返回任何输出；已终止本轮并准备接收下一条消息。'
+        body: 'Grok 已收到任务，但 30 秒内没有返回任何输出；已终止本轮并准备接收下一条消息。'
       });
       if (current) {
         current.agentState = markInterrupted(current.agentState);
@@ -687,15 +702,19 @@ function buildHelpCard(contextKey: string): FeishuCardUpdate {
       '/workspace list|save|use|remove',
       '/approval confirm_write|confirm_all|auto'
     ].join('\n'),
-    actions: [
-      commandAction('状态', '/status', contextKey),
-      commandAction('新会话', '/new', contextKey),
-      commandAction('停止', '/stop', contextKey, 'danger'),
-      commandAction('MCP 工具', '/mcp tools', contextKey),
-      commandAction('权限检查', '/mcp scopes', contextKey),
-      commandAction('诊断', '/doctor', contextKey)
-    ]
+    actions: commandActions(contextKey)
   };
+}
+
+function commandActions(contextKey: string) {
+  return [
+    commandAction('状态', '/status', contextKey),
+    commandAction('新会话', '/new', contextKey),
+    commandAction('停止', '/stop', contextKey, 'danger'),
+    commandAction('MCP 工具', '/mcp tools', contextKey),
+    commandAction('权限检查', '/mcp scopes', contextKey),
+    commandAction('诊断', '/doctor', contextKey)
+  ];
 }
 
 function commandAction(
@@ -709,6 +728,31 @@ function commandAction(
     type,
     value: { action: 'run_command', command, context_key: contextKey }
   };
+}
+
+function commandTitle(text: string): string {
+  const [command, subcommand] = text.trim().split(/\s+/u);
+  switch (command) {
+    case '/status':
+      return 'Grok 状态';
+    case '/new':
+    case '/reset':
+      return 'Grok 新会话';
+    case '/stop':
+      return 'Grok 已停止';
+    case '/cd':
+      return '工作目录';
+    case '/workspace':
+      return subcommand ? `Workspace ${subcommand}` : 'Workspace';
+    case '/approval':
+      return '审批策略';
+    case '/mcp':
+      return subcommand ? `MCP ${subcommand}` : 'MCP';
+    case '/doctor':
+      return 'Bridge 诊断';
+    default:
+      return '命令结果';
+  }
 }
 
 function formatCardUpdate(update: Parameters<FeishuApiPort['patchCard']>[1]): string {
