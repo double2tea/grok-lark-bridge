@@ -25,6 +25,7 @@ describe('StateStore', () => {
     store.upsertSession({
       key: 'chat_1',
       chatId: 'chat_1',
+      rootId: null,
       threadId: null,
       grokSessionId: 'grok_1',
       cwd: '/tmp',
@@ -34,6 +35,18 @@ describe('StateStore', () => {
     });
 
     expect(store.getSession('chat_1')?.grokSessionId).toBe('grok_1');
+    store.close();
+  });
+
+  it('persists session aliases', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
+    dirs.push(dir);
+    const store = new StateStore(dir);
+
+    store.rememberSessionAliases('chat_1:root_1', ['chat_1:msg_1', 'chat_1:thread_1']);
+
+    expect(store.resolveSessionAlias('chat_1:msg_1')).toBe('chat_1:root_1');
+    expect(store.resolveSessionAlias('chat_1:thread_1')).toBe('chat_1:root_1');
     store.close();
   });
 });

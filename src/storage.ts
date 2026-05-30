@@ -13,6 +13,7 @@ import { randomId } from './utils.js';
 interface SessionRow {
   readonly key: string;
   readonly chat_id: string;
+  readonly root_id: string | null;
   readonly thread_id: string | null;
   readonly grok_session_id: string;
   readonly cwd: string;
@@ -80,9 +81,34 @@ export class StateStore {
     return row ? mapSession(row) : undefined;
   }
 
+  resolveSessionAlias(aliasKey: string): string | undefined {
+    const row = this.db
+      .prepare('select session_key from session_aliases where alias_key = ?')
+      .get(aliasKey) as { readonly session_key: string } | undefined;
+    return row?.session_key;
+  }
+
+  rememberSessionAliases(sessionKey: string, aliasKeys: readonly string[]): void {
+    const now = Date.now();
+    const statement = this.db.prepare(
+      `insert into session_aliases(alias_key, session_key, created_at, updated_at)
+       values (?, ?, ?, ?)
+       on conflict(alias_key) do update set
+         session_key = excluded.session_key,
+         updated_at = excluded.updated_at`
+    );
+    const write = this.db.transaction((aliases: readonly string[]) => {
+      for (const aliasKey of aliases) {
+        statement.run(aliasKey, sessionKey, now, now);
+      }
+    });
+    write([...new Set(aliasKeys)]);
+  }
+
   upsertSession(input: {
     readonly key: string;
     readonly chatId: string;
+    readonly rootId: string | null;
     readonly threadId: string | null;
     readonly grokSessionId: string;
     readonly cwd: string;
@@ -93,9 +119,12 @@ export class StateStore {
     this.db
       .prepare(
         `insert into sessions(
-          key, chat_id, thread_id, grok_session_id, cwd, approval_policy, run_status, active_message_id, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          key, chat_id, root_id, thread_id, grok_session_id, cwd, approval_policy, run_status, active_message_id, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(key) do update set
+          chat_id = excluded.chat_id,
+          root_id = excluded.root_id,
+          thread_id = excluded.thread_id,
           grok_session_id = excluded.grok_session_id,
           cwd = excluded.cwd,
           approval_policy = excluded.approval_policy,
@@ -106,6 +135,7 @@ export class StateStore {
       .run(
         input.key,
         input.chatId,
+        input.rootId,
         input.threadId,
         input.grokSessionId,
         input.cwd,
@@ -224,12 +254,20 @@ export class StateStore {
       create table if not exists sessions (
         key text primary key,
         chat_id text not null,
+        root_id text,
         thread_id text,
         grok_session_id text not null,
         cwd text not null,
         approval_policy text not null,
         run_status text not null,
         active_message_id text,
+        updated_at integer not null
+      );
+
+      create table if not exists session_aliases (
+        alias_key text primary key,
+        session_key text not null,
+        created_at integer not null,
         updated_at integer not null
       );
 
@@ -253,6 +291,7 @@ export class StateStore {
         resolved_at integer
       );
     `);
+    this.addColumnIfMissing('sessions', 'root_id', 'text');
     this.addColumnIfMissing('pending_approvals', 'status', "text not null default 'pending'");
     this.addColumnIfMissing('pending_approvals', 'result_text', 'text');
     this.addColumnIfMissing('pending_approvals', 'resolved_at', 'integer');
@@ -272,6 +311,7 @@ function mapSession(row: SessionRow): SessionRecord {
   return {
     key: row.key,
     chatId: row.chat_id,
+    rootId: row.root_id,
     threadId: row.thread_id,
     grokSessionId: row.grok_session_id,
     cwd: row.cwd,

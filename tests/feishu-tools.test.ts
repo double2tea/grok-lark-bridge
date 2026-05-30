@@ -83,6 +83,7 @@ describe('FeishuToolExecutor', () => {
     store.upsertSession({
       key: 'chat_1',
       chatId: 'chat_1',
+      rootId: null,
       threadId: null,
       grokSessionId: 'grok_1',
       cwd: '/tmp',
@@ -141,6 +142,7 @@ describe('FeishuToolExecutor', () => {
     store.upsertSession({
       key: 'chat_1',
       chatId: 'chat_1',
+      rootId: null,
       threadId: null,
       grokSessionId: 'grok_1',
       cwd: '/tmp',

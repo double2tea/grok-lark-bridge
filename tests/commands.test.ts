@@ -66,7 +66,7 @@ function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
     access: {
       adminOpenIds,
       allowedChatIds: [],
-      defaultApprovalPolicy: 'confirm_write',
+      defaultApprovalPolicy: 'auto',
       approvalOverrides: [],
       enableAdvancedOpenApiTool: false
     },

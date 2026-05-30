@@ -57,17 +57,22 @@ export interface IncomingMessage {
   readonly chatType: 'p2p' | 'group';
   readonly text: string;
   readonly mentionsBot: boolean;
+  readonly rootId?: string;
   readonly threadId?: string;
+  readonly parentId?: string;
+  readonly replyToMessageId?: string;
 }
 
 export interface SessionKey {
   readonly chatId: string;
+  readonly rootId?: string;
   readonly threadId?: string;
 }
 
 export interface SessionRecord {
   readonly key: string;
   readonly chatId: string;
+  readonly rootId: string | null;
   readonly threadId: string | null;
   readonly grokSessionId: string;
   readonly cwd: string;
@@ -86,7 +91,17 @@ export interface GrokRunInput {
 
 export type GrokEvent =
   | { readonly type: 'text'; readonly text: string }
-  | { readonly type: 'tool'; readonly name: string; readonly text: string }
+  | {
+      readonly type: 'tool';
+      readonly name: string;
+      readonly text: string;
+      readonly status?: 'running' | 'done' | 'error' | 'pending_approval';
+      readonly kind?: 'command' | 'file_change' | 'web_search' | 'mcp' | 'generic';
+      readonly inputSummary?: string;
+      readonly outputSummary?: string;
+      readonly durationMs?: number;
+      readonly approvalId?: string;
+    }
   | { readonly type: 'status'; readonly text: string };
 
 export interface GrokBackend {

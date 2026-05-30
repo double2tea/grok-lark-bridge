@@ -5,9 +5,11 @@ export type ToolStatus = 'running' | 'done' | 'error' | 'pending_approval';
 export interface ToolEntry {
   id: string;
   name: string;
+  kind: NonNullable<Extract<GrokEvent, { type: 'tool' }>['kind']>;
   inputSummary: string;
   status: ToolStatus;
   output?: string;
+  durationMs?: number;
   approvalId?: string;
 }
 
@@ -79,21 +81,55 @@ export function reduce(state: RunState, event: GrokEvent): RunState {
     }
 
     case 'tool': {
-      // Best-effort tool start detection
       const name = event.name || 'tool';
-      const summary = event.text ? summarizeInput(event.text) : name;
+      const status = event.status ?? 'running';
+      const output =
+        event.outputSummary ?? (status === 'done' || status === 'error' ? event.text : undefined);
+      const existingIndex = findLastRunningToolIndex(state.blocks, name);
+
+      if (existingIndex >= 0 && status !== 'running') {
+        const block = state.blocks[existingIndex];
+        if (block.kind !== 'tool') {
+          return state;
+        }
+        const updated: Block = {
+          kind: 'tool',
+          tool: {
+            ...block.tool,
+            status,
+            output: output ? output.slice(0, 200) : block.tool.output,
+            durationMs: event.durationMs ?? block.tool.durationMs,
+            approvalId: event.approvalId ?? block.tool.approvalId
+          }
+        };
+        return {
+          ...state,
+          blocks: [
+            ...state.blocks.slice(0, existingIndex),
+            updated,
+            ...state.blocks.slice(existingIndex + 1)
+          ],
+          footer: status === 'pending_approval' ? 'waiting_approval' : null
+        };
+      }
+
+      const summary = event.inputSummary ?? (event.text ? summarizeInput(event.text) : name);
 
       const tool: ToolEntry = {
         id: `tool_${String(Date.now())}_${Math.random().toString(36).slice(2, 8)}`,
         name,
+        kind: event.kind ?? 'generic',
         inputSummary: summary,
-        status: 'running'
+        status,
+        output: output ? output.slice(0, 200) : undefined,
+        durationMs: event.durationMs,
+        approvalId: event.approvalId
       };
 
       return {
         ...state,
         blocks: [...closeStreamingText(state.blocks), { kind: 'tool', tool }],
-        footer: 'tool_running'
+        footer: status === 'pending_approval' ? 'waiting_approval' : 'tool_running'
       };
     }
 
@@ -110,6 +146,7 @@ export function applyApprovalRequest(
   const tool: ToolEntry = {
     id: `approval_${approvalId}`,
     name: toolName,
+    kind: 'mcp',
     inputSummary: '需要飞书审批',
     status: 'pending_approval',
     approvalId
@@ -196,7 +233,9 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
               ? '⏳'
               : '⟳';
       let line = `${statusIcon} ${t.name}`;
+      if (t.kind !== 'generic') line += ` [${t.kind}]`;
       if (t.inputSummary) line += ` — ${t.inputSummary}`;
+      if (t.durationMs !== undefined) line += ` (${formatDuration(t.durationMs)})`;
       if (t.output) line += `\n  → ${t.output}`;
       lines.push(line);
     }
@@ -217,4 +256,21 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
   }
 
   return body || '（无输出）';
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${String(durationMs)}ms`;
+  }
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function findLastRunningToolIndex(blocks: readonly Block[], name: string): number {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.kind === 'tool' && block.tool.name === name && block.tool.status === 'running') {
+      return index;
+    }
+  }
+  return -1;
 }

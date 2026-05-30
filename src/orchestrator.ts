@@ -127,6 +127,7 @@ export class RuntimeOrchestrator {
           chatType: session.threadId ? 'group' : 'p2p',
           text: action.command,
           mentionsBot: true,
+          rootId: session.rootId ?? undefined,
           threadId: session.threadId ?? undefined
         },
         session
@@ -240,27 +241,22 @@ export class RuntimeOrchestrator {
     const previousRun = this.runs.get(session.key);
     const reusePreviousCard = previousRun?.cardMessageId !== undefined;
 
-    let cardMessageId: string | null = null;
-    let isNewCardForThisRun = false;
-
-    if (previousRun?.cardMessageId) {
-      cardMessageId = previousRun.cardMessageId;
-      isNewCardForThisRun = false;
-    } else {
-      const initialCard = {
-        title: 'Grok 正在处理',
-        status: 'info' as const,
-        body: '已收到消息，正在发送到当前 Grok 会话。',
-        actions: [
-          {
-            text: '停止',
-            type: 'danger' as const,
-            value: { action: 'stop_run', context_key: session.key }
-          }
-        ]
-      };
-      cardMessageId = (await this.sendCardOrNotify(session.chatId, initialCard)) ?? null;
-      isNewCardForThisRun = true;
+    let cardMessageId = previousRun?.cardMessageId ?? null;
+    let isNewCardForThisRun = cardMessageId === null;
+    if (!cardMessageId) {
+      cardMessageId =
+        (await this.sendCardOrNotify(session.chatId, {
+          title: 'Grok 已收到',
+          status: 'info',
+          body: '正在生成回复。',
+          actions: [
+            {
+              text: '停止',
+              type: 'danger',
+              value: { action: 'stop_run', context_key: session.key }
+            }
+          ]
+        })) ?? null;
     }
 
     this.store.setSessionRun(session.key, 'running', cardMessageId ?? null);
@@ -281,11 +277,6 @@ export class RuntimeOrchestrator {
       agentState,
       cardMessageId: cardMessageId ?? null
     });
-
-    // Streaming UX note:
-    // We intentionally do NOT send any intermediate "收到新消息..." patch on follow-ups.
-    // The very first GrokEvent from the new run will directly update the existing card via the RunState.
-    // This avoids extra card flashes and gives a much smoother continuous streaming feel.
 
     const timeoutState = { timedOut: false };
     const outputState = { hasOutput: false };
@@ -331,12 +322,6 @@ export class RuntimeOrchestrator {
       }
     }, grokFirstOutputTimeoutMs);
 
-    const liveCardMessageId = cardMessageId ?? undefined;
-    const liveCard = liveCardMessageId
-      ? new ThrottledCardUpdater((update) =>
-          this.safePatchCard(liveCardMessageId, update, session.chatId)
-        )
-      : undefined;
     const outputText: OutputTextState = {
       messageId: undefined,
       text: '',
@@ -349,8 +334,43 @@ export class RuntimeOrchestrator {
       (text) => this.patchOutputText(outputText, text),
       textUpdateMinIntervalMs
     );
+    let liveCard = cardMessageId
+      ? new ThrottledCardUpdater((update) =>
+          this.safePatchCard(cardMessageId ?? '', update, session.chatId)
+        )
+      : undefined;
 
-    const update = (event: GrokEvent): Promise<void> => {
+    const ensureRunCard = async (): Promise<void> => {
+      if (cardMessageId) {
+        return;
+      }
+      const initialCard = {
+        title: 'Grok 正在处理',
+        status: 'info' as const,
+        body: '正在处理需要展示的工具或状态。',
+        actions: [
+          {
+            text: '停止',
+            type: 'danger' as const,
+            value: { action: 'stop_run', context_key: session.key }
+          }
+        ]
+      };
+      cardMessageId = (await this.sendCardOrNotify(session.chatId, initialCard)) ?? null;
+      isNewCardForThisRun = true;
+      this.store.setSessionRun(session.key, 'running', cardMessageId);
+      const current = this.runs.get(session.key);
+      if (current) {
+        current.cardMessageId = cardMessageId;
+      }
+      if (cardMessageId) {
+        liveCard = new ThrottledCardUpdater((update) =>
+          this.safePatchCard(cardMessageId ?? '', update, session.chatId)
+        );
+      }
+    };
+
+    const update = async (event: GrokEvent): Promise<void> => {
       armIdleWatchdog();
       outputState.hasOutput = true;
       clearTimeout(firstOutputTimer);
@@ -360,26 +380,12 @@ export class RuntimeOrchestrator {
         outputText.chain = outputText.chain.then(() =>
           this.publishOutputText(outputText, liveText, session.chatId)
         );
-        if (liveCard && !outputText.announced) {
-          outputText.announced = true;
-          liveCard.request({
-            title: isNewCardForThisRun ? 'Grok 正在处理' : 'Grok 继续处理',
-            status: 'info',
-            body: '正在流式输出，详情见下方文本消息。',
-            actions: [
-              {
-                text: '停止',
-                type: 'danger',
-                value: { action: 'stop_run', context_key: session.key }
-              }
-            ]
-          });
-        }
         return outputText.chain;
       }
 
       // Feed event into the structured state machine (big UX upgrade)
       agentState = reduceAgentState(agentState, event);
+      await ensureRunCard();
 
       if (liveCard) {
         const body = toCardBody(agentState);
@@ -420,11 +426,13 @@ export class RuntimeOrchestrator {
       agentState = finalizeIfRunning(agentState);
       const finalBody = toHybridCardBody(agentState, outputText.text.length > 0);
 
-      await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-        title: code === 0 ? 'Grok 执行完成' : 'Grok 执行失败',
-        status: code === 0 ? 'success' : 'error',
-        body: finalBody
-      });
+      if (cardMessageId || code !== 0 || outputText.text.length === 0) {
+        await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+          title: code === 0 ? 'Grok 已回复' : 'Grok 执行失败',
+          status: code === 0 ? 'success' : 'error',
+          body: finalBody
+        });
+      }
     } catch (error) {
       await outputText.chain;
       await liveText.flush();
@@ -433,11 +441,13 @@ export class RuntimeOrchestrator {
       if (!timeoutState.timedOut) {
         agentState = markInterrupted(agentState);
         if (error instanceof GrokRunAbortedError) {
-          await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-            title: 'Grok 已停止',
-            status: 'warning',
-            body: '本轮运行已手动停止。'
-          });
+          if (cardMessageId) {
+            await this.reportRunUpdate(session.chatId, cardMessageId, {
+              title: 'Grok 已停止',
+              status: 'warning',
+              body: '本轮运行已手动停止。'
+            });
+          }
         } else {
           await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
             title: 'Grok 执行异常',
@@ -518,11 +528,7 @@ export class RuntimeOrchestrator {
     const session = this.sessions.getOrCreateFromMessage(message);
     const version = this.queueVersions.get(key) ?? 0;
     if (this.queues.has(key) || this.runs.has(key)) {
-      void this.notifyText(
-        session.chatId,
-        '已收到新消息，已加入当前 Grok 会话队列。',
-        'queue notice'
-      );
+      this.record('info', `Grok message queued silently context=${key}`);
     }
     this.enqueue(
       key,

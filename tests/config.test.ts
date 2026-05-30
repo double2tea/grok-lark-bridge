@@ -51,5 +51,6 @@ describe('config', () => {
     expect(config.feishuAppId).toBe('cli_env');
     expect(config.feishuAppSecret).toBe('secret_env');
     expect(config.dataDir).toBe(localRoot);
+    expect(config.access.defaultApprovalPolicy).toBe('auto');
   });
 });

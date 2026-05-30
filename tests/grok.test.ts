@@ -19,7 +19,8 @@ describe('parseStreamingLine', () => {
     expect(parseStreamingLine(JSON.stringify({ type: 'tool_call', text: 'calling' }))).toEqual({
       type: 'tool',
       name: 'tool_call',
-      text: 'calling'
+      text: 'calling',
+      status: 'running'
     });
   });
 });
@@ -50,7 +51,34 @@ describe('parseAcpUpdate', () => {
         toolName: 'lark_doc_read',
         content: { type: 'text', text: 'reading document' }
       })
-    ).toEqual({ type: 'tool', name: 'lark_doc_read', text: 'reading document' });
+    ).toEqual({
+      type: 'tool',
+      name: 'lark_doc_read',
+      text: 'reading document',
+      status: 'running',
+      kind: 'mcp'
+    });
+  });
+
+  it('keeps structured ACP tool result details', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_result',
+        toolName: 'shell_command',
+        toolCall: { arguments: JSON.stringify({ command: 'npm test' }) },
+        result: { text: 'passed' },
+        durationMs: 1200
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'shell_command',
+      text: '{"command":"npm test"}',
+      status: 'done',
+      kind: 'command',
+      inputSummary: '{"command":"npm test"}',
+      outputSummary: 'passed',
+      durationMs: 1200
+    });
   });
 
   it('ignores generic ACP tool heartbeat updates', () => {

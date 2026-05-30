@@ -9,7 +9,8 @@ import type {
 import { StateStore } from './storage.js';
 
 export function makeSessionKey(input: SessionKey): string {
-  return input.threadId ? `${input.chatId}:${input.threadId}` : input.chatId;
+  const scopeId = input.rootId ?? input.threadId;
+  return scopeId ? `${input.chatId}:${scopeId}` : input.chatId;
 }
 
 export class SessionService {
@@ -20,15 +21,27 @@ export class SessionService {
   ) {}
 
   getOrCreateFromMessage(message: IncomingMessage): SessionRecord {
-    const key = makeSessionKey({ chatId: message.chatId, threadId: message.threadId });
-    const existing = this.store.getSession(key);
+    const key = makeSessionKey({
+      chatId: message.chatId,
+      rootId: message.rootId,
+      threadId: message.threadId
+    });
+    const aliases = sessionAliasKeys(message);
+    const resolvedAlias = this.resolveFirstAlias(aliases);
+    if (resolvedAlias) {
+      this.store.rememberSessionAliases(resolvedAlias.key, aliases);
+      return resolvedAlias;
+    }
+    const existing = this.findFirstExistingSession(aliases) ?? this.store.getSession(key);
     if (existing) {
+      this.store.rememberSessionAliases(existing.key, aliases);
       return existing;
     }
     const policy = this.resolveDefaultPolicy(message.chatId, message.senderOpenId);
     this.store.upsertSession({
       key,
       chatId: message.chatId,
+      rootId: message.rootId ?? null,
       threadId: message.threadId ?? null,
       grokSessionId: this.store.createGrokSessionId(),
       cwd: this.defaultWorkspaceRoot,
@@ -40,10 +53,19 @@ export class SessionService {
     if (!created) {
       throw new Error(`Failed to create session: ${key}`);
     }
+    this.store.rememberSessionAliases(created.key, aliases);
     return created;
   }
 
   getOrCreateByKey(contextKey: string): SessionRecord {
+    const aliasTarget = this.store.resolveSessionAlias(contextKey);
+    if (aliasTarget) {
+      const aliased = this.store.getSession(aliasTarget);
+      if (!aliased) {
+        throw new Error(`Session alias target not found: ${contextKey} -> ${aliasTarget}`);
+      }
+      return aliased;
+    }
     const existing = this.store.getSession(contextKey);
     if (existing) {
       return existing;
@@ -84,6 +106,7 @@ export class SessionService {
     this.store.upsertSession({
       key: session.key,
       chatId: session.chatId,
+      rootId: session.rootId,
       threadId: session.threadId,
       grokSessionId: this.store.createGrokSessionId(),
       cwd: session.cwd,
@@ -110,4 +133,44 @@ export class SessionService {
     );
     return userOverride?.policy ?? this.access.defaultApprovalPolicy;
   }
+
+  private resolveFirstAlias(aliasKeys: readonly string[]): SessionRecord | undefined {
+    for (const aliasKey of aliasKeys) {
+      const targetKey = this.store.resolveSessionAlias(aliasKey);
+      if (!targetKey) {
+        continue;
+      }
+      const session = this.store.getSession(targetKey);
+      if (!session) {
+        throw new Error(`Session alias target not found: ${aliasKey} -> ${targetKey}`);
+      }
+      return session;
+    }
+    return undefined;
+  }
+
+  private findFirstExistingSession(keys: readonly string[]): SessionRecord | undefined {
+    for (const key of keys) {
+      const session = this.store.getSession(key);
+      if (session) {
+        return session;
+      }
+    }
+    return undefined;
+  }
+}
+
+function sessionAliasKeys(message: IncomingMessage): readonly string[] {
+  return [
+    makeSessionKey({ chatId: message.chatId, rootId: message.rootId, threadId: message.threadId }),
+    ...[
+      message.rootId,
+      message.threadId,
+      message.parentId,
+      message.replyToMessageId,
+      message.messageId
+    ]
+      .filter((id): id is string => id !== undefined && id.length > 0)
+      .map((id) => makeSessionKey({ chatId: message.chatId, threadId: id }))
+  ];
 }

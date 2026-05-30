@@ -14,7 +14,7 @@ import { expandHome } from './utils.js';
 const accessConfigSchema = z.object({
   adminOpenIds: z.array(z.string()).default([]),
   allowedChatIds: z.array(z.string()).default([]),
-  defaultApprovalPolicy: z.enum(approvalPolicies).default('confirm_write'),
+  defaultApprovalPolicy: z.enum(approvalPolicies).default('auto'),
   approvalOverrides: z
     .array(
       z.object({

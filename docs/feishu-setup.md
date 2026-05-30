@@ -39,6 +39,8 @@ npm run setup
 
 在权限管理中批量导入 `config/feishu-permissions.json`，提交管理员审批。
 
+最小聊天桥接只需要机器人消息能力和事件订阅。`config/feishu-permissions.json` 里的文档、任务、日历、多维表格、通讯录等权限，是给 Grok 通过 MCP 主动操作飞书资源用的；不用这些工具时可以不申请。
+
 ## 4. Local Checks
 
 如果没有使用 `npm run setup`，复制环境文件：

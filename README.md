@@ -1,6 +1,6 @@
 # Grok Lark Bridge
 
-本项目把 Grok Build CLI 接入飞书：飞书负责消息入口、权限和审批；Grok 负责 coding agent 执行；本地 MCP server 把已授权飞书 OpenAPI 暴露给 Grok。
+本项目把 Grok Build CLI 接入飞书：飞书 SDK / OpenAPI 负责收发消息、卡片和机器人权限；Grok 负责 coding agent 执行；本地 MCP server 只在 Grok 需要主动操作飞书资源时，把已授权 OpenAPI 暴露成工具。
 
 **近期核心体验升级**：
 
@@ -36,6 +36,8 @@ npm run setup
 
 4. 在权限管理中批量导入 `config/feishu-permissions.json` 的 tenant scopes，并提交管理员审批。
 
+如果只需要“飞书聊天遥控 Grok + 普通文本回复”，核心权限是 `im:message:send_as_bot` 和事件订阅；文档、任务、日历、多维表格、通讯录等 scopes 只用于 MCP 工具。
+
 5. 可选：配置管理员 open_id：
 
 ```json
@@ -62,6 +64,10 @@ npm run feishu:check
 完整飞书配置步骤见 [docs/feishu-setup.md](docs/feishu-setup.md)。
 
 ## Grok MCP 配置
+
+普通聊天回复不需要 MCP：桥接服务会直接用飞书 SDK / OpenAPI 把 Grok 的文本结果发回当前会话。
+
+只有当你希望 Grok 主动创建飞书任务、读写文档、发送本地文件/图片/音频/视频、查询多维表格等，才需要把本项目的 MCP server 配给 Grok。
 
 把本项目的 MCP server 加入 Grok 的 MCP 配置。构建后命令为：
 
@@ -112,7 +118,7 @@ Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `request
 
 ## Media Messages
 
-Grok can send generated local files back to Feishu through MCP tools:
+Grok can send generated local files back to Feishu through MCP tools. These are for agent-initiated file delivery, not for ordinary chat replies:
 
 - `lark_msg_send_image`：上传本地图片并发送图片消息。
 - `lark_msg_send_video`：上传本地 MP4 并发送视频消息。
@@ -123,16 +129,16 @@ These tools use the Feishu SDK IM upload APIs (`im.v1.image.create` / `im.v1.fil
 
 ## Approval Policy
 
-- `confirm_write`：默认值，读操作直接执行，写操作发确认卡片。
+- `auto`：默认值，直接执行已授权工具，适合个人机器人和小范围试用。
+- `confirm_write`：读操作直接执行，写操作发确认卡片。
 - `confirm_all`：所有 MCP 工具调用都发确认卡片。
-- `auto`：直接执行已授权工具。
 
 本方案使用租户机器人身份，不包含用户 OAuth。所有能力边界来自飞书应用已审批 scopes。
 
 ## Streaming & Conversation Continuity（流式与会话连续性）
 
 - **结构化增量更新**：使用 RunState reducer 管理卡片内容，支持文本流式追加、工具调用状态（running/done/error/pending_approval）可视化，以及状态提示。
-- **同会话复用卡片**：follow-up 消息默认复用上一张运行卡片，避免重复出现“Grok 正在处理，正在发送到当前 Grok 会话”启动提示，体验更接近连续对话。
+- **普通聊天轻量状态**：普通文本对话默认先发送一张“Grok 已收到”状态卡，再用普通文本消息承载回复，避免用户误判卡住。
 - **Idle Watchdog**：长时间无输出自动终止并在卡片中清晰标注（可通过配置调整时长）。
 - **审批与主卡片联动**：审批通过/执行后，会自动在对应会话的主运行卡片中追加状态更新。
 

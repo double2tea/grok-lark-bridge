@@ -6,6 +6,10 @@ import readline from 'node:readline';
 import type { GrokBackend, GrokEvent, GrokRunInput } from './types.js';
 import { isRecord, readString, sanitizeForCard } from './utils.js';
 
+type ToolEvent = Extract<GrokEvent, { readonly type: 'tool' }>;
+type ToolEventStatus = NonNullable<ToolEvent['status']>;
+type ToolKind = NonNullable<ToolEvent['kind']>;
+
 interface PendingRequest {
   readonly resolve: (value: Record<string, unknown>) => void;
   readonly reject: (error: Error) => void;
@@ -436,7 +440,23 @@ function parseAcpToolUpdate(
   if (isGenericToolNoise(sessionUpdate, name, text)) {
     return undefined;
   }
-  return { type: 'tool', name, text: sanitizeForCard(text) };
+  const result = toOptionalRecord(update.result);
+  const outputSummary = summarizeToolValue(result) ?? readString(update, 'output');
+  const inputSummary =
+    summarizeToolValue(update.args) ??
+    summarizeToolValue(update.input) ??
+    summarizeToolValue(toOptionalRecord(update.toolCall).arguments);
+  return compactToolEvent({
+    type: 'tool',
+    name,
+    text: sanitizeForCard(text),
+    status: inferToolStatus(sessionUpdate, update, text),
+    kind: inferToolKind(name),
+    inputSummary,
+    outputSummary,
+    durationMs: readDurationMs(update),
+    approvalId: readApprovalId(text) ?? readString(update, 'approvalId')
+  });
 }
 
 function isGenericToolNoise(sessionUpdate: string, name: string, text: string): boolean {
@@ -462,9 +482,113 @@ export function parseStreamingLine(line: string): GrokEvent | undefined {
   }
   const type = isRecord(parsed) ? readString(parsed, 'type') : undefined;
   if (type?.includes('tool')) {
-    return { type: 'tool', name: type, text: sanitizeForCard(text) };
+    const name = isRecord(parsed) ? (readString(parsed, 'name') ?? type) : type;
+    const inputSummary = isRecord(parsed)
+      ? (summarizeToolValue(parsed.args) ?? summarizeToolValue(parsed.input))
+      : undefined;
+    const outputSummary = isRecord(parsed)
+      ? (summarizeToolValue(parsed.result) ?? summarizeToolValue(parsed.output))
+      : undefined;
+    return compactToolEvent({
+      type: 'tool',
+      name,
+      text: sanitizeForCard(text),
+      status: isRecord(parsed) ? inferToolStatus(type, parsed, text) : 'running',
+      kind: inferToolKind(name),
+      inputSummary,
+      outputSummary,
+      durationMs: isRecord(parsed) ? readDurationMs(parsed) : undefined,
+      approvalId: readApprovalId(text)
+    });
   }
   return { type: 'text', text: sanitizeForCard(text) };
+}
+
+function compactToolEvent(event: ToolEvent): ToolEvent {
+  const result: {
+    type: 'tool';
+    name: string;
+    text: string;
+    status?: ToolEventStatus;
+    kind?: ToolKind;
+    inputSummary?: string;
+    outputSummary?: string;
+    durationMs?: number;
+    approvalId?: string;
+  } = {
+    type: 'tool',
+    name: event.name,
+    text: event.text
+  };
+  if (event.status !== undefined) result.status = event.status;
+  if (event.kind !== undefined && event.kind !== 'generic') result.kind = event.kind;
+  if (event.inputSummary !== undefined) result.inputSummary = event.inputSummary;
+  if (event.outputSummary !== undefined) result.outputSummary = event.outputSummary;
+  if (event.durationMs !== undefined) result.durationMs = event.durationMs;
+  if (event.approvalId !== undefined) result.approvalId = event.approvalId;
+  return result;
+}
+
+function inferToolStatus(
+  eventType: string,
+  payload: Record<string, unknown>,
+  text: string
+): ToolEventStatus | undefined {
+  const explicit = readString(payload, 'status');
+  const haystack = `${eventType} ${explicit ?? ''} ${text}`.toLowerCase();
+  if (haystack.includes('approval requested')) return 'pending_approval';
+  if (haystack.includes('pending_approval')) return 'pending_approval';
+  if (haystack.includes('failed') || haystack.includes('error')) return 'error';
+  if (haystack.includes('completed') || haystack.includes('complete')) return 'done';
+  if (haystack.includes('result') || payload.result !== undefined) return 'done';
+  if (haystack.includes('started') || haystack.includes('call')) return 'running';
+  return undefined;
+}
+
+function inferToolKind(name: string): ToolKind | undefined {
+  const lower = name.toLowerCase();
+  if (lower.includes('search') || lower.includes('web')) return 'web_search';
+  if (lower.includes('write') || lower.includes('edit') || lower.includes('diff')) {
+    return 'file_change';
+  }
+  if (lower.includes('bash') || lower.includes('shell') || lower.includes('command')) {
+    return 'command';
+  }
+  if (lower.startsWith('lark_') || lower.includes('mcp')) return 'mcp';
+  return undefined;
+}
+
+function summarizeToolValue(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const text = sanitizeForCard(value);
+    return text ? text.slice(0, 160) : undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  if (Object.keys(value).length === 0) {
+    return undefined;
+  }
+  const text = findText(value);
+  if (text) {
+    return sanitizeForCard(text).slice(0, 160);
+  }
+  const json = JSON.stringify(value);
+  return json.length > 0 ? sanitizeForCard(json).slice(0, 160) : undefined;
+}
+
+function readDurationMs(record: Record<string, unknown>): number | undefined {
+  for (const key of ['durationMs', 'duration_ms', 'elapsedMs', 'elapsed_ms']) {
+    const value = record[key];
+    if (typeof value === 'number') {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function readApprovalId(text: string): string | undefined {
+  return /Approval requested:\s*([A-Za-z0-9_-]+)/u.exec(text)?.[1];
 }
 
 function chooseAuthMethod(init: Record<string, unknown>): string {

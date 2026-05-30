@@ -75,7 +75,10 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
     chatType,
     text: content,
     mentionsBot: hasMention(message),
-    threadId: readString(message, 'thread_id')
+    rootId: readString(message, 'root_id'),
+    threadId: readString(message, 'thread_id'),
+    parentId: readString(message, 'parent_id'),
+    replyToMessageId: readString(message, 'reply_to_message_id')
   };
 }
 

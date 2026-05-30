@@ -13,6 +13,9 @@ describe('Feishu event normalization', () => {
           chat_type: 'group',
           content: JSON.stringify({ text: '@bot hello' }),
           mentions: [{ id: 'bot' }],
+          root_id: 'root_1',
+          parent_id: 'parent_1',
+          reply_to_message_id: 'reply_1',
           thread_id: 'thread_1'
         }
       }
@@ -26,6 +29,9 @@ describe('Feishu event normalization', () => {
       chatType: 'group',
       text: '@bot hello',
       mentionsBot: true,
+      rootId: 'root_1',
+      parentId: 'parent_1',
+      replyToMessageId: 'reply_1',
       threadId: 'thread_1'
     });
   });

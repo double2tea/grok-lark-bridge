@@ -134,22 +134,21 @@ class BlockingGrok implements GrokBackend {
 }
 
 describe('RuntimeOrchestrator', () => {
-  it('uses current-session wording instead of CLI startup wording', async () => {
+  it('uses a lightweight status card for ordinary text replies', async () => {
     const { orchestrator, api } = createRuntime(new FakeFeishuApi());
     await orchestrator.handleMessage(message());
-    await waitFor(() => api.cards.length > 0);
+    await waitFor(() => api.texts.includes('你好'));
 
-    expect(api.cards[0].body).toContain('当前 Grok 会话');
-    expect(api.cards[0].body).not.toContain('启动 Grok Build CLI');
+    expect(api.cards[0]?.title).toBe('Grok 已收到');
+    expect(api.cards.at(-1)?.title).toBe('Grok 已回复');
   });
 
-  it('falls back to text when the initial card cannot be sent', async () => {
+  it('falls back to text when a command card cannot be sent', async () => {
     const { orchestrator, api } = createRuntime(new FakeFeishuApi(true));
-    await orchestrator.handleMessage(message());
-    await waitFor(() => api.texts.some((text) => text.includes('Grok 执行完成')));
+    await orchestrator.handleMessage(message('/status'));
+    await waitFor(() => api.texts.some((text) => text.includes('Grok 卡片发送失败')));
 
     expect(api.texts.join('\n')).toContain('Grok 卡片发送失败');
-    expect(api.texts.join('\n')).toContain('Grok 执行完成');
   });
 
   it('batches quick consecutive messages into one Grok run', async () => {
@@ -200,12 +199,14 @@ describe('RuntimeOrchestrator', () => {
     await orchestrator.handleMessage(message('第一条', 'evt_1'));
     await waitFor(() => grok.prompts.length === 1);
     await orchestrator.handleMessage(message('第二条', 'evt_2'));
-    await waitFor(() => api.texts.includes('已收到新消息，已加入当前 Grok 会话队列。'));
+    await sleep(50);
+
+    expect(api.texts).not.toContain('已收到新消息，已加入当前 Grok 会话队列。');
 
     grok.finishNext();
     await waitFor(() => grok.prompts.length === 2);
     grok.finishNext();
-    await waitFor(() => api.cards.at(-1)?.title === 'Grok 执行完成');
+    await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
   });
 
   it('does not run queued messages after stop', async () => {
@@ -216,7 +217,7 @@ describe('RuntimeOrchestrator', () => {
     await orchestrator.handleMessage(message('第一条', 'evt_1'));
     await waitFor(() => grok.prompts.length === 1);
     await orchestrator.handleMessage(message('第二条', 'evt_2'));
-    await waitFor(() => api.texts.includes('已收到新消息，已加入当前 Grok 会话队列。'));
+    await sleep(50);
     await orchestrator.handleMessage(message('/stop', 'evt_stop'));
     await waitFor(() => api.cards.some((card) => card.title === 'Grok 已停止'));
     await sleep(50);
@@ -280,7 +281,7 @@ function createRuntime(
     access: {
       adminOpenIds: [],
       allowedChatIds: [],
-      defaultApprovalPolicy: 'confirm_write',
+      defaultApprovalPolicy: 'auto',
       approvalOverrides: [],
       enableAdvancedOpenApiTool: false
     },
