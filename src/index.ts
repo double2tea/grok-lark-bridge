@@ -16,7 +16,9 @@ async function main(): Promise<void> {
   const sessions = new SessionService(store, config.access, config.defaultWorkspaceRoot);
   const api = new FeishuApi(config);
   const tools = new FeishuToolExecutor(api, store, sessions);
-  const grok = new GrokAcpBackend(config.grokBin, process.cwd());
+  const grok = new GrokAcpBackend(config.grokBin, process.cwd(), (binding) => {
+    store.setNativeSessionIdByGrokSessionId(binding.grokSessionId, binding.nativeSessionId);
+  });
   const orchestrator = new RuntimeOrchestrator(config, api, store, sessions, grok, tools);
   const gateway = new FeishuGateway(config, {
     onMessage: (message) => orchestrator.handleMessage(message),

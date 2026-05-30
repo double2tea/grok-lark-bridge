@@ -38,6 +38,14 @@ interface AcpSession {
   readonly cwd: string;
 }
 
+interface NativeSessionBinding {
+  readonly grokSessionId: string;
+  readonly nativeSessionId: string;
+  readonly cwd: string;
+}
+
+type NativeSessionBinder = (binding: NativeSessionBinding) => void;
+
 interface AcpMcpServer {
   readonly name: string;
   readonly type: 'stdio';
@@ -60,7 +68,8 @@ export class GrokAcpBackend implements GrokBackend {
 
   constructor(
     private readonly grokBin: string,
-    private readonly projectRoot = process.cwd()
+    private readonly projectRoot = process.cwd(),
+    private readonly bindNativeSession?: NativeSessionBinder
   ) {}
 
   close(): void {
@@ -197,6 +206,11 @@ export class GrokAcpBackend implements GrokBackend {
     }
     const created = { acpSessionId, cwd: input.cwd };
     this.sessions.set(input.sessionId, created);
+    this.bindNativeSession?.({
+      grokSessionId: input.sessionId,
+      nativeSessionId: acpSessionId,
+      cwd: input.cwd
+    });
     return created;
   }
 

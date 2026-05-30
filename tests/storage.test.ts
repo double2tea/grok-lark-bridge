@@ -28,6 +28,7 @@ describe('StateStore', () => {
       rootId: null,
       threadId: null,
       grokSessionId: 'grok_1',
+      nativeSessionId: null,
       cwd: '/tmp',
       approvalPolicy: 'confirm_write',
       runStatus: 'idle',
@@ -35,6 +36,8 @@ describe('StateStore', () => {
     });
 
     expect(store.getSession('chat_1')?.grokSessionId).toBe('grok_1');
+    store.setNativeSessionIdByGrokSessionId('grok_1', 'acp_1');
+    expect(store.getSession('chat_1')?.nativeSessionId).toBe('acp_1');
     store.close();
   });
 

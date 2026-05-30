@@ -16,6 +16,7 @@ interface SessionRow {
   readonly root_id: string | null;
   readonly thread_id: string | null;
   readonly grok_session_id: string;
+  readonly native_session_id: string | null;
   readonly cwd: string;
   readonly approval_policy: ApprovalPolicy;
   readonly run_status: RunStatus;
@@ -111,6 +112,7 @@ export class StateStore {
     readonly rootId: string | null;
     readonly threadId: string | null;
     readonly grokSessionId: string;
+    readonly nativeSessionId: string | null;
     readonly cwd: string;
     readonly approvalPolicy: ApprovalPolicy;
     readonly runStatus: RunStatus;
@@ -119,13 +121,14 @@ export class StateStore {
     this.db
       .prepare(
         `insert into sessions(
-          key, chat_id, root_id, thread_id, grok_session_id, cwd, approval_policy, run_status, active_message_id, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          key, chat_id, root_id, thread_id, grok_session_id, native_session_id, cwd, approval_policy, run_status, active_message_id, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         on conflict(key) do update set
           chat_id = excluded.chat_id,
           root_id = excluded.root_id,
           thread_id = excluded.thread_id,
           grok_session_id = excluded.grok_session_id,
+          native_session_id = excluded.native_session_id,
           cwd = excluded.cwd,
           approval_policy = excluded.approval_policy,
           run_status = excluded.run_status,
@@ -138,12 +141,21 @@ export class StateStore {
         input.rootId,
         input.threadId,
         input.grokSessionId,
+        input.nativeSessionId,
         input.cwd,
         input.approvalPolicy,
         input.runStatus,
         input.activeMessageId,
         Date.now()
       );
+  }
+
+  setNativeSessionIdByGrokSessionId(grokSessionId: string, nativeSessionId: string): void {
+    this.db
+      .prepare(
+        'update sessions set native_session_id = ?, updated_at = ? where grok_session_id = ?'
+      )
+      .run(nativeSessionId, Date.now(), grokSessionId);
   }
 
   setSessionRun(key: string, runStatus: RunStatus, activeMessageId: string | null): void {
@@ -257,6 +269,7 @@ export class StateStore {
         root_id text,
         thread_id text,
         grok_session_id text not null,
+        native_session_id text,
         cwd text not null,
         approval_policy text not null,
         run_status text not null,
@@ -292,6 +305,7 @@ export class StateStore {
       );
     `);
     this.addColumnIfMissing('sessions', 'root_id', 'text');
+    this.addColumnIfMissing('sessions', 'native_session_id', 'text');
     this.addColumnIfMissing('pending_approvals', 'status', "text not null default 'pending'");
     this.addColumnIfMissing('pending_approvals', 'result_text', 'text');
     this.addColumnIfMissing('pending_approvals', 'resolved_at', 'integer');
@@ -314,6 +328,7 @@ function mapSession(row: SessionRow): SessionRecord {
     rootId: row.root_id,
     threadId: row.thread_id,
     grokSessionId: row.grok_session_id,
+    nativeSessionId: row.native_session_id,
     cwd: row.cwd,
     approvalPolicy: row.approval_policy,
     runStatus: row.run_status,

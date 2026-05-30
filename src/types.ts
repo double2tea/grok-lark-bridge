@@ -75,6 +75,7 @@ export interface SessionRecord {
   readonly rootId: string | null;
   readonly threadId: string | null;
   readonly grokSessionId: string;
+  readonly nativeSessionId: string | null;
   readonly cwd: string;
   readonly approvalPolicy: ApprovalPolicy;
   readonly runStatus: RunStatus;
