@@ -147,6 +147,53 @@ describe('parseAcpUpdate', () => {
     });
   });
 
+  it('summarizes JSON text wrapped search results', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_search_text',
+        title: 'search_tool',
+        status: 'completed',
+        content: {
+          type: 'text',
+          text: JSON.stringify({ results: [{ title: 'one' }, { title: 'two' }] })
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'search_tool',
+      text: '2 results',
+      toolCallId: 'call_search_text',
+      status: 'done',
+      kind: 'web_search'
+    });
+  });
+
+  it('summarizes MCP OkayOutput wrappers', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_mcp',
+        title: 'use_tool',
+        status: 'completed',
+        content: {
+          type: 'text',
+          text: JSON.stringify({
+            type: 'MCP',
+            tool_name: 'lark_msg_send_image',
+            output: { OkayOutput: JSON.stringify({ message_id: 'om_1' }) }
+          })
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'use_tool',
+      text: 'message: om_1',
+      toolCallId: 'call_mcp',
+      status: 'done'
+    });
+  });
+
   it('keeps directory tool summaries concise', () => {
     expect(
       parseAcpUpdate({

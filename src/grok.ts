@@ -929,6 +929,19 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (Array.isArray(results)) {
     return `${String(results.length)} results`;
   }
+  const messageId = readString(value, 'message_id') ?? readString(value, 'messageId');
+  if (messageId) {
+    return `message: ${compactSummaryText(messageId).slice(0, 120)}`;
+  }
+  const outputRecord = toOptionalRecord(value.output);
+  const mcpOutput =
+    readString(outputRecord, 'OkayOutput') ??
+    readString(outputRecord, 'ErrorOutput') ??
+    readString(value, 'OkayOutput') ??
+    readString(value, 'ErrorOutput');
+  if (mcpOutput) {
+    return summarizeToolValue(mcpOutput);
+  }
   const contentRecord = firstRecord(value.Content, value.FileContent, value.content);
   const contentText = readString(contentRecord, 'content') ?? readString(value, 'content');
   if (readString(value, 'type') === 'ListDir' && contentText) {
@@ -951,7 +964,7 @@ function summarizeToolValue(value: unknown): string | undefined {
   }
   const text = findText(value);
   if (text) {
-    return compactSummaryText(text).slice(0, 160);
+    return summarizeToolValue(text);
   }
   const json = JSON.stringify(value);
   return json.length > 0 ? compactSummaryText(json).slice(0, 160) : undefined;
