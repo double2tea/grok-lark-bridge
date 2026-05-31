@@ -182,7 +182,7 @@ describe('RuntimeOrchestrator', () => {
     expect(api.cards.at(-1)?.body).toContain('文本输出见下方消息');
   });
 
-  it('does not repeatedly send full text when message editing fails', async () => {
+  it('puts final text in the card when message editing fails', async () => {
     const api = new FakeFeishuApi(false, true);
     const grok = new FakeGrok([
       { type: 'text', text: '你' },
@@ -191,9 +191,10 @@ describe('RuntimeOrchestrator', () => {
     ]);
     const { orchestrator } = createRuntime(api, grok);
     await orchestrator.handleMessage(message());
-    await waitFor(() => api.texts.includes('你好呀'));
+    await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
 
-    expect(api.texts).toEqual(['你', '你好呀']);
+    expect(api.texts).toEqual(['你']);
+    expect(api.cards.at(-1)?.body).toContain('你好呀');
   });
 
   it('shows queued follow-up messages while a run is active', async () => {

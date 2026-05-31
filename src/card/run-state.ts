@@ -231,7 +231,7 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
       if (!isLowSignalStatus(block.content)) {
         statusLines.push(block.content);
       }
-    } else {
+    } else if (!isInternalToolDiscovery(block.tool)) {
       toolLines.push(renderToolLine(block.tool));
     }
   }
@@ -306,6 +306,10 @@ function compactLines(lines: readonly string[], limit: number, suffix: string): 
     return [...lines];
   }
   return [...lines.slice(0, limit), `…${suffix} ${String(lines.length - limit)} 项`];
+}
+
+function isInternalToolDiscovery(tool: ToolEntry): boolean {
+  return tool.name === 'search_tool' && tool.status === 'done';
 }
 
 function isLowSignalStatus(content: string): boolean {

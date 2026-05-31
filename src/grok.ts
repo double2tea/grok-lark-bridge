@@ -898,6 +898,13 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (Object.keys(value).length === 0) {
     return undefined;
   }
+  const variant = readString(value, 'variant');
+  if (variant === 'UseTool') {
+    const toolName = readString(value, 'tool_name') ?? readString(value, 'toolName') ?? 'tool';
+    const toolInput = value.tool_input ?? value.toolInput ?? value.input;
+    const inputSummary = summarizeToolValue(toolInput);
+    return inputSummary ? `${toolName}: ${inputSummary}` : toolName;
+  }
   const query = readString(value, 'query');
   if (query) {
     return `query: ${compactSummaryText(query).slice(0, 140)}`;
@@ -915,7 +922,6 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (targetFile) {
     return `file: ${compactSummaryText(targetFile).slice(0, 145)}`;
   }
-  const variant = readString(value, 'variant');
   const pattern = readString(value, 'pattern');
   if (variant === 'Grep' && pattern) {
     const searchPath = readString(value, 'path') ?? '.';

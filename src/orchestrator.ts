@@ -485,12 +485,11 @@ export class RuntimeOrchestrator {
       );
       await outputText.chain;
       await liveText.flush();
-      await this.sendFinalOutputFallback(outputText, session.chatId);
       await liveCard?.flush();
 
       // Finalize the structured state
       agentState = finalizeIfRunning(agentState);
-      const finalBody = toHybridCardBody(agentState, outputText.text.length > 0);
+      const finalBody = toHybridCardBody(agentState, outputText);
 
       if (cardMessageId || code !== 0 || outputText.text.length === 0) {
         await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
@@ -502,7 +501,6 @@ export class RuntimeOrchestrator {
     } catch (error) {
       await outputText.chain;
       await liveText.flush();
-      await this.sendFinalOutputFallback(outputText, session.chatId);
       await liveCard?.flush();
       if (!timeoutState.timedOut) {
         agentState = markInterrupted(agentState);
@@ -697,18 +695,6 @@ export class RuntimeOrchestrator {
     liveText.request(text);
   }
 
-  private async sendFinalOutputFallback(output: OutputTextState, chatId: string): Promise<void> {
-    if (!output.editFailed) {
-      return;
-    }
-    const text = truncate(output.text, 8000);
-    if (!text || text === output.deliveredText) {
-      return;
-    }
-    await this.notifyText(chatId, text, 'final text fallback');
-    output.deliveredText = text;
-  }
-
   private async sendCardOrNotify(
     chatId: string,
     update: Parameters<FeishuApiPort['sendCard']>[1]
@@ -841,10 +827,13 @@ function formatCardUpdate(update: Parameters<FeishuApiPort['patchCard']>[1]): st
   return `${update.title}\n${update.body}`;
 }
 
-function toHybridCardBody(state: AgentRunState, hasTextOutput: boolean): string {
+function toHybridCardBody(state: AgentRunState, output: OutputTextState): string {
   const body = toCardBody(state);
-  if (!hasTextOutput) {
+  if (output.text.length === 0) {
     return body;
+  }
+  if (output.editFailed) {
+    return body === '（无输出）' ? output.text : `${output.text}\n\n${body}`;
   }
   if (body === '（无输出）') {
     return '文本输出见下方消息。';

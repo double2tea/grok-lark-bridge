@@ -194,6 +194,29 @@ describe('parseAcpUpdate', () => {
     });
   });
 
+  it('summarizes generic UseTool inputs without raw JSON', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_use_tool',
+        title: 'use_tool',
+        status: 'completed',
+        rawInput: {
+          variant: 'UseTool',
+          tool_name: 'grok-search__web_search',
+          tool_input: { query: '今天科技新闻 头条 最新', extra_sources: 5 }
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'use_tool',
+      text: 'grok-search__web_search: query: 今天科技新闻 头条 最新',
+      toolCallId: 'call_use_tool',
+      status: 'done',
+      inputSummary: 'grok-search__web_search: query: 今天科技新闻 头条 最新'
+    });
+  });
+
   it('keeps directory tool summaries concise', () => {
     expect(
       parseAcpUpdate({
