@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcessByStdio, ChildProcessWithoutNullStreams } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import type { Readable } from 'node:stream';
 import type { GrokBackend, GrokEvent, GrokRunInput } from './types.js';
-import { isRecord, readString, sanitizeForCard } from './utils.js';
+import { isRecord, readString, sanitizeForCard, stripAnsi } from './utils.js';
 
 type ToolEvent = Extract<GrokEvent, { readonly type: 'tool' }>;
 type ToolEventStatus = NonNullable<ToolEvent['status']>;
@@ -57,14 +58,32 @@ interface AcpMcpServer {
   }[];
 }
 
+type JsonRpcId = number | string;
+
+interface TerminalExitStatus {
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+}
+
+interface AcpTerminal {
+  readonly proc: ChildProcessByStdio<null, Readable, Readable>;
+  output: string;
+  truncated: boolean;
+  exitStatus: TerminalExitStatus | undefined;
+  readonly outputByteLimit: number;
+  readonly waiters: Array<(status: TerminalExitStatus) => void>;
+}
+
 export class GrokAcpBackend implements GrokBackend {
   private proc: ChildProcessWithoutNullStreams | undefined;
   private rl: readline.Interface | undefined;
   private nextId = 1;
+  private nextTerminalId = 1;
   private initialized: Promise<void> | undefined;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly sessions = new Map<string, AcpSession>();
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly terminals = new Map<string, AcpTerminal>();
 
   constructor(
     private readonly grokBin: string,
@@ -80,6 +99,7 @@ export class GrokAcpBackend implements GrokBackend {
     this.rl = undefined;
     this.sessions.clear();
     this.activeRuns.clear();
+    this.releaseAllTerminals();
     this.rejectPending(new Error('Grok ACP process closed'));
     proc?.kill('SIGTERM');
   }
@@ -177,6 +197,7 @@ export class GrokAcpBackend implements GrokBackend {
         this.initialized = undefined;
         this.sessions.clear();
         this.activeRuns.clear();
+        this.releaseAllTerminals();
       }
       this.rejectPending(error);
     });
@@ -185,6 +206,7 @@ export class GrokAcpBackend implements GrokBackend {
       this.initialized = undefined;
       this.sessions.clear();
       this.activeRuns.clear();
+      this.releaseAllTerminals();
       this.rejectPending(new Error('Grok ACP process exited'));
     });
     this.rl = readline.createInterface({ input: proc.stdout });
@@ -195,8 +217,12 @@ export class GrokAcpBackend implements GrokBackend {
     const init = await this.request('initialize', {
       protocolVersion: 1,
       clientCapabilities: {
-        fs: { readTextFile: true, writeTextFile: true },
+        fs: { readTextFile: true, writeTextFile: false },
         terminal: true
+      },
+      clientInfo: {
+        name: 'grok-lark-bridge',
+        version: '0.1.0'
       }
     });
     const methodId = chooseAuthMethod(init);
@@ -306,8 +332,12 @@ export class GrokAcpBackend implements GrokBackend {
       this.handleSessionUpdate(message);
       return;
     }
-    const id = readNumber(message, 'id');
-    if (id === undefined) {
+    const id = readJsonRpcId(message, 'id');
+    if (method && id !== undefined) {
+      void this.handleClientRequest(id, method, message.params);
+      return;
+    }
+    if (typeof id !== 'number') {
       return;
     }
     const pending = this.pending.get(id);
@@ -323,6 +353,177 @@ export class GrokAcpBackend implements GrokBackend {
     }
     const result = message.result;
     pending.resolve(isRecord(result) ? result : {});
+  }
+
+  private async handleClientRequest(id: JsonRpcId, method: string, params: unknown): Promise<void> {
+    try {
+      const result = await this.resolveClientRequest(method, params);
+      this.sendJsonRpcResult(id, result);
+    } catch (error) {
+      this.sendJsonRpcError(id, -32000, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async resolveClientRequest(method: string, params: unknown): Promise<unknown> {
+    if (method === 'fs/read_text_file') {
+      return readAcpTextFile(params);
+    }
+    if (method === 'session/request_permission') {
+      return { outcome: { outcome: 'cancelled' } };
+    }
+    if (method === 'terminal/create') {
+      return this.createTerminal(params);
+    }
+    if (method === 'terminal/output') {
+      return this.readTerminalOutput(params);
+    }
+    if (method === 'terminal/wait_for_exit') {
+      return this.waitForTerminalExit(params);
+    }
+    if (method === 'terminal/kill') {
+      this.killTerminal(params);
+      return null;
+    }
+    if (method === 'terminal/release') {
+      this.releaseTerminal(params);
+      return null;
+    }
+    throw new Error(`Unsupported ACP client method: ${method}`);
+  }
+
+  private sendJsonRpcResult(id: JsonRpcId, result: unknown): void {
+    this.proc?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`);
+  }
+
+  private sendJsonRpcError(id: JsonRpcId, code: number, message: string): void {
+    this.proc?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
+  }
+
+  private createTerminal(params: unknown): { readonly terminalId: string } {
+    const record = expectRecord(params, 'terminal params');
+    const command = readString(record, 'command');
+    if (!command) {
+      throw new Error('terminal/create requires command');
+    }
+    const args = readStringArray(record.args) ?? [];
+    const cwd = readString(record, 'cwd') ?? this.projectRoot;
+    if (!path.isAbsolute(cwd)) {
+      throw new Error('terminal/create cwd must be absolute');
+    }
+    const outputByteLimit = readPositiveInteger(record, 'outputByteLimit') ?? 1024 * 1024;
+    const proc = spawn(command, args, {
+      cwd,
+      env: { ...process.env, ...readEnv(record.env) },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    const terminalId = `term_${String(this.nextTerminalId)}`;
+    this.nextTerminalId += 1;
+    const terminal: AcpTerminal = {
+      proc,
+      output: '',
+      truncated: false,
+      exitStatus: undefined,
+      outputByteLimit,
+      waiters: []
+    };
+    this.terminals.set(terminalId, terminal);
+    const append = (chunk: Buffer): void => {
+      terminal.output += stripAnsi(String(chunk));
+      const trimmed = trimToUtf8Bytes(terminal.output, terminal.outputByteLimit);
+      if (trimmed !== terminal.output) {
+        terminal.truncated = true;
+        terminal.output = trimmed;
+      }
+    };
+    proc.stdout.on('data', append);
+    proc.stderr.on('data', append);
+    proc.on('error', (error) => {
+      terminal.output += `${error.message}\n`;
+      this.finishTerminal(terminal, { exitCode: null, signal: null });
+    });
+    proc.on('close', (code, signal) => {
+      this.finishTerminal(terminal, { exitCode: code, signal });
+    });
+    return { terminalId };
+  }
+
+  private readTerminalOutput(params: unknown): {
+    readonly output: string;
+    readonly truncated: boolean;
+    readonly exitStatus?: TerminalExitStatus;
+  } {
+    const terminal = this.getTerminal(params);
+    return {
+      output: terminal.output,
+      truncated: terminal.truncated,
+      ...(terminal.exitStatus ? { exitStatus: terminal.exitStatus } : {})
+    };
+  }
+
+  private waitForTerminalExit(params: unknown): Promise<TerminalExitStatus> {
+    const terminal = this.getTerminal(params);
+    if (terminal.exitStatus) {
+      return Promise.resolve(terminal.exitStatus);
+    }
+    return new Promise((resolve) => {
+      terminal.waiters.push(resolve);
+    });
+  }
+
+  private killTerminal(params: unknown): void {
+    const terminal = this.getTerminal(params);
+    if (!terminal.exitStatus) {
+      terminal.proc.kill('SIGTERM');
+    }
+  }
+
+  private releaseTerminal(params: unknown): void {
+    const record = expectRecord(params, 'terminal params');
+    const terminalId = readString(record, 'terminalId');
+    if (!terminalId) {
+      throw new Error('terminal request requires terminalId');
+    }
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal) {
+      return;
+    }
+    if (!terminal.exitStatus) {
+      terminal.proc.kill('SIGTERM');
+    }
+    this.terminals.delete(terminalId);
+  }
+
+  private releaseAllTerminals(): void {
+    for (const terminal of this.terminals.values()) {
+      if (!terminal.exitStatus) {
+        terminal.proc.kill('SIGTERM');
+      }
+    }
+    this.terminals.clear();
+  }
+
+  private getTerminal(params: unknown): AcpTerminal {
+    const record = expectRecord(params, 'terminal params');
+    const terminalId = readString(record, 'terminalId');
+    if (!terminalId) {
+      throw new Error('terminal request requires terminalId');
+    }
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal) {
+      throw new Error(`Unknown terminalId: ${terminalId}`);
+    }
+    return terminal;
+  }
+
+  private finishTerminal(terminal: AcpTerminal, status: TerminalExitStatus): void {
+    if (terminal.exitStatus) {
+      return;
+    }
+    terminal.exitStatus = status;
+    const waiters = terminal.waiters.splice(0);
+    for (const resolve of waiters) {
+      resolve(status);
+    }
   }
 
   private handleSessionUpdate(message: Record<string, unknown>): void {
@@ -821,9 +1022,97 @@ function chooseAuthMethod(init: Record<string, unknown>): string {
   throw new Error('Run `grok login` first, or set XAI_API_KEY.');
 }
 
-function readNumber(record: Record<string, unknown>, key: string): number | undefined {
+function readJsonRpcId(record: Record<string, unknown>, key: string): JsonRpcId | undefined {
   const value = record[key];
-  return typeof value === 'number' ? value : undefined;
+  return typeof value === 'number' || typeof value === 'string' ? value : undefined;
+}
+
+export async function readAcpTextFile(params: unknown): Promise<{ readonly content: string }> {
+  const record = expectRecord(params, 'fs/read_text_file params');
+  const filePath = readString(record, 'path');
+  if (!filePath) {
+    throw new Error('fs/read_text_file requires path');
+  }
+  if (!path.isAbsolute(filePath)) {
+    throw new Error('fs/read_text_file path must be absolute');
+  }
+  const content = await fs.promises.readFile(filePath, 'utf8');
+  const startLine = readPositiveInteger(record, 'line') ?? readPositiveInteger(record, 'startLine');
+  const lineLimit = readPositiveInteger(record, 'limit') ?? readPositiveInteger(record, 'numLines');
+  if (startLine === undefined && lineLimit === undefined) {
+    return { content };
+  }
+  const lines = content.split(/\r?\n/u);
+  const startIndex = (startLine ?? 1) - 1;
+  const endIndex = lineLimit === undefined ? undefined : startIndex + lineLimit;
+  return { content: lines.slice(startIndex, endIndex).join('\n') };
+}
+
+function expectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value;
+}
+
+function readPositiveInteger(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    return undefined;
+  }
+  return value;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const result: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      throw new Error('terminal/create args must be strings');
+    }
+    result.push(item);
+  }
+  return result;
+}
+
+function readEnv(value: unknown): NodeJS.ProcessEnv {
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  const env: NodeJS.ProcessEnv = {};
+  for (const item of value) {
+    if (!isRecord(item)) {
+      throw new Error('terminal/create env entries must be objects');
+    }
+    const name = readString(item, 'name');
+    const envValue = readString(item, 'value');
+    if (!name || envValue === undefined) {
+      throw new Error('terminal/create env entries require name and value');
+    }
+    env[name] = envValue;
+  }
+  return env;
+}
+
+function trimToUtf8Bytes(value: string, byteLimit: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= byteLimit) {
+    return value;
+  }
+  const kept: string[] = [];
+  let bytes = 0;
+  const chars = Array.from(value);
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    const char = chars[index];
+    const charBytes = Buffer.byteLength(char, 'utf8');
+    if (bytes + charBytes > byteLimit) {
+      break;
+    }
+    kept.push(char);
+    bytes += charBytes;
+  }
+  return kept.reverse().join('');
 }
 
 function toOptionalRecord(value: unknown): Record<string, unknown> {

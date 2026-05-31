@@ -1,5 +1,14 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseAcpUpdate, parseStreamingLine } from '../src/grok.js';
+import type { GrokEvent } from '../src/types.js';
+import {
+  GrokAcpBackend,
+  parseAcpUpdate,
+  parseStreamingLine,
+  readAcpTextFile
+} from '../src/grok.js';
 
 describe('parseStreamingLine', () => {
   it('keeps plain text lines', () => {
@@ -259,3 +268,139 @@ describe('parseAcpUpdate', () => {
     });
   });
 });
+
+describe('ACP client methods', () => {
+  it('reads requested file ranges', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-read-'));
+    const file = path.join(dir, 'sample.txt');
+    await fs.writeFile(file, 'one\ntwo\nthree\n', 'utf8');
+
+    await expect(readAcpTextFile({ path: file, line: 2, limit: 1 })).resolves.toEqual({
+      content: 'two'
+    });
+  });
+
+  it('responds to agent-initiated file and terminal requests', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-backend-'));
+    const file = path.join(dir, 'README.md');
+    const fakeGrok = path.join(dir, 'fake-grok.mjs');
+    await fs.writeFile(file, 'alpha', 'utf8');
+    await fs.writeFile(fakeGrok, fakeGrokScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const previousFile = process.env.FAKE_ACP_FILE;
+    process.env.FAKE_ACP_FILE = file;
+    const backend = new GrokAcpBackend(fakeGrok, dir);
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'read and run',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'read:alpha; term:term-ok' });
+    } finally {
+      backend.close();
+      if (previousFile === undefined) {
+        delete process.env.FAKE_ACP_FILE;
+      } else {
+        process.env.FAKE_ACP_FILE = previousFile;
+      }
+    }
+  });
+});
+
+function fakeGrokScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+let fileContent = '';
+let terminalId = '';
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'sess_test' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      id: 101,
+      method: 'fs/read_text_file',
+      params: { sessionId: 'sess_test', path: process.env.FAKE_ACP_FILE }
+    });
+    return;
+  }
+  if (message.id === 101) {
+    fileContent = message.result.content;
+    send({
+      id: 102,
+      method: 'terminal/create',
+      params: {
+        sessionId: 'sess_test',
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write("term-ok")'],
+        cwd: process.cwd()
+      }
+    });
+    return;
+  }
+  if (message.id === 102) {
+    terminalId = message.result.terminalId;
+    send({
+      id: 103,
+      method: 'terminal/wait_for_exit',
+      params: { sessionId: 'sess_test', terminalId }
+    });
+    return;
+  }
+  if (message.id === 103) {
+    send({
+      id: 104,
+      method: 'terminal/output',
+      params: { sessionId: 'sess_test', terminalId }
+    });
+    return;
+  }
+  if (message.id === 104) {
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: 'sess_test',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'read:' + fileContent + '; term:' + message.result.output }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
