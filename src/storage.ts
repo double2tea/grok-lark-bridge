@@ -169,7 +169,7 @@ export class StateStore {
   setSessionCwd(key: string, cwd: string, grokSessionId: string): void {
     this.db
       .prepare(
-        'update sessions set cwd = ?, grok_session_id = ?, run_status = ?, active_message_id = null, updated_at = ? where key = ?'
+        'update sessions set cwd = ?, grok_session_id = ?, native_session_id = null, run_status = ?, active_message_id = null, updated_at = ? where key = ?'
       )
       .run(cwd, grokSessionId, 'idle', Date.now(), key);
   }

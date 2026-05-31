@@ -41,6 +41,34 @@ describe('StateStore', () => {
     store.close();
   });
 
+  it('clears stale native ACP binding when cwd creates a new Grok session', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
+    dirs.push(dir);
+    const store = new StateStore(dir);
+
+    store.upsertSession({
+      key: 'chat_1',
+      chatId: 'chat_1',
+      rootId: null,
+      threadId: null,
+      grokSessionId: 'grok_1',
+      nativeSessionId: 'acp_1',
+      cwd: '/tmp/old',
+      approvalPolicy: 'auto',
+      runStatus: 'idle',
+      activeMessageId: null
+    });
+
+    store.setSessionCwd('chat_1', '/tmp/new', 'grok_2');
+
+    expect(store.getSession('chat_1')).toMatchObject({
+      grokSessionId: 'grok_2',
+      nativeSessionId: null,
+      cwd: '/tmp/new'
+    });
+    store.close();
+  });
+
   it('persists session aliases', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
     dirs.push(dir);
