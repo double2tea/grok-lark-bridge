@@ -879,6 +879,12 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (targetFile) {
     return `file: ${compactSummaryText(targetFile).slice(0, 145)}`;
   }
+  const variant = readString(value, 'variant');
+  const pattern = readString(value, 'pattern');
+  if (variant === 'Grep' && pattern) {
+    const searchPath = readString(value, 'path') ?? '.';
+    return `grep: ${compactSummaryText(pattern).slice(0, 80)} in ${compactSummaryText(searchPath).slice(0, 60)}`;
+  }
   const prompt = readString(value, 'prompt');
   if (prompt) {
     return `prompt: ${compactSummaryText(prompt).slice(0, 140)}`;
@@ -887,13 +893,17 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (Array.isArray(results)) {
     return `${String(results.length)} results`;
   }
-  const contentRecord = isRecord(value.Content) ? value.Content : toOptionalRecord(value.content);
+  const contentRecord = firstRecord(value.Content, value.FileContent, value.content);
   const contentText = readString(contentRecord, 'content') ?? readString(value, 'content');
   if (readString(value, 'type') === 'ListDir' && contentText) {
     return `${String(countListEntries(contentText))} entries`;
   }
   if (readString(value, 'type') === 'ReadFile' && contentText) {
     return `${String(contentText.length)} chars`;
+  }
+  const stdoutText = decodeByteArray(value.stdout);
+  if (readString(value, 'type') === 'GrepSearch' && stdoutText) {
+    return compactSummaryText(stdoutText).slice(0, 160);
   }
   const text = findText(value);
   if (text) {
@@ -912,6 +922,29 @@ function countListEntries(value: string): number {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.startsWith('- ')).length;
+}
+
+function firstRecord(...values: unknown[]): Record<string, unknown> {
+  for (const value of values) {
+    if (isRecord(value)) {
+      return value;
+    }
+  }
+  return {};
+}
+
+function decodeByteArray(value: unknown): string | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined;
+  }
+  const bytes: number[] = [];
+  for (const item of value) {
+    if (typeof item !== 'number' || !Number.isInteger(item) || item < 0 || item > 255) {
+      return undefined;
+    }
+    bytes.push(item);
+  }
+  return Buffer.from(bytes).toString('utf8');
 }
 
 function extractImagePath(value: unknown): string | undefined {

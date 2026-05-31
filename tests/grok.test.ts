@@ -180,6 +180,54 @@ describe('parseAcpUpdate', () => {
     });
   });
 
+  it('keeps Grok FileContent read summaries concise', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_file_content',
+        title: 'read_file',
+        status: 'completed',
+        rawInput: { variant: 'ReadFile', target_file: 'README.md' },
+        rawOutput: {
+          type: 'ReadFile',
+          FileContent: { content: '1→# Grok Lark Bridge\n2→README' }
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'read_file',
+      text: 'file: README.md',
+      toolCallId: 'call_file_content',
+      status: 'done',
+      inputSummary: 'file: README.md',
+      outputSummary: '29 chars'
+    });
+  });
+
+  it('keeps grep byte output summaries concise', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_grep',
+        title: 'grep',
+        status: 'completed',
+        rawInput: { variant: 'Grep', pattern: 'acp|ACP', path: '.' },
+        rawOutput: {
+          type: 'GrepSearch',
+          stdout: Array.from(Buffer.from('grep search timed out after 60 seconds'))
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'grep',
+      text: 'grep: acp|ACP in .',
+      toolCallId: 'call_grep',
+      status: 'done',
+      inputSummary: 'grep: acp|ACP in .',
+      outputSummary: 'grep search timed out after 60 seconds'
+    });
+  });
+
   it('extracts local image artifacts from Grok ACP raw output', () => {
     expect(
       parseAcpUpdate({
