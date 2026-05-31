@@ -416,7 +416,7 @@ export class RuntimeOrchestrator {
       if (event.type === 'tool' && event.artifactUrl && !event.artifactPath) {
         agentState = reduceAgentState(agentState, {
           type: 'status',
-          text: `Grok 返回了图片 URL，但当前只自动发送本地图片文件：${event.artifactUrl}`
+          text: `Grok 返回了媒体 URL，但当前只自动发送本地图片或 MP4 文件：${event.artifactUrl}`
         });
         liveCard?.request({
           title: 'Grok 继续处理',

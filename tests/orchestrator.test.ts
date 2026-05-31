@@ -375,7 +375,7 @@ describe('RuntimeOrchestrator', () => {
     expect(api.cards.at(-1)?.body).toContain('已发送视频：venus.mp4');
   });
 
-  it('explains image artifact URLs instead of silently dropping them', async () => {
+  it('explains media artifact URLs instead of silently dropping them', async () => {
     const api = new FakeFeishuApi();
     const grok = new FakeGrok([
       {
@@ -390,7 +390,7 @@ describe('RuntimeOrchestrator', () => {
     const { orchestrator } = createRuntime(api, grok);
 
     await orchestrator.handleMessage(message('生成图片', 'evt_image_url'));
-    await waitFor(() => api.cards.some((card) => card.body.includes('图片 URL')));
+    await waitFor(() => api.cards.some((card) => card.body.includes('媒体 URL')));
 
     expect(api.images).toEqual([]);
   });
