@@ -221,29 +221,36 @@ export function finalizeIfRunning(state: RunState): RunState {
 
 export function toCardBody(state: RunState, maxLength = 8000): string {
   const lines: string[] = [];
+  const toolLines: string[] = [];
+  const statusLines: string[] = [];
 
   for (const block of state.blocks) {
     if (block.kind === 'text') {
       lines.push(block.content);
     } else if (block.kind === 'status') {
-      lines.push(`[status] ${block.content}`);
+      if (!isLowSignalStatus(block.content)) {
+        statusLines.push(block.content);
+      }
     } else {
-      const t = block.tool;
-      const statusIcon =
-        t.status === 'done'
-          ? '✓'
-          : t.status === 'error'
-            ? '✗'
-            : t.status === 'pending_approval'
-              ? '⏳'
-              : '⟳';
-      let line = `${statusIcon} ${t.name}`;
-      if (t.kind !== 'generic') line += ` [${t.kind}]`;
-      if (t.inputSummary) line += ` — ${t.inputSummary}`;
-      if (t.durationMs !== undefined) line += ` (${formatDuration(t.durationMs)})`;
-      if (t.output) line += `\n  → ${t.output}`;
-      lines.push(line);
+      toolLines.push(renderToolLine(block.tool));
     }
+  }
+
+  if (toolLines.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push('执行摘要');
+    lines.push(...compactLines(toolLines, 8, '还有工具调用已完成'));
+  }
+
+  if (statusLines.length > 0) {
+    if (lines.length > 0) lines.push('');
+    lines.push(
+      ...compactLines(
+        statusLines.map((line) => `• ${line}`),
+        4,
+        '还有状态更新'
+      )
+    );
   }
 
   let body = lines.join('\n');
@@ -261,6 +268,52 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
   }
 
   return body || '（无输出）';
+}
+
+function renderToolLine(tool: ToolEntry): string {
+  const statusText = toolStatusText(tool.status);
+  const summary = tool.inputSummary ? `：${tool.inputSummary}` : '';
+  const duration = tool.durationMs !== undefined ? ` (${formatDuration(tool.durationMs)})` : '';
+  const output = renderToolOutput(tool);
+  return `${statusText} ${tool.name}${summary}${duration}${output}`;
+}
+
+function renderToolOutput(tool: ToolEntry): string {
+  if (!tool.output) {
+    return '';
+  }
+  if (tool.status === 'done') {
+    return '';
+  }
+  return `\n  ${tool.output}`;
+}
+
+function toolStatusText(status: ToolStatus): string {
+  switch (status) {
+    case 'done':
+      return '✓';
+    case 'error':
+      return '✗';
+    case 'pending_approval':
+      return '待审批';
+    case 'running':
+      return '进行中';
+  }
+}
+
+function compactLines(lines: readonly string[], limit: number, suffix: string): string[] {
+  if (lines.length <= limit) {
+    return [...lines];
+  }
+  return [...lines.slice(0, limit), `…${suffix} ${String(lines.length - limit)} 项`];
+}
+
+function isLowSignalStatus(content: string): boolean {
+  return [
+    '正在连接 Grok ACP。',
+    'Grok ACP 已就绪。',
+    '已发送 prompt，等待 Grok 输出或工具事件。'
+  ].includes(content);
 }
 
 function formatDuration(durationMs: number): string {

@@ -10,4 +10,30 @@ describe('run state card body', () => {
 
     expect(toCardBody(state)).toContain('你好！');
   });
+
+  it('keeps final tool cards compact and user-facing', () => {
+    const state = [
+      { type: 'status' as const, text: '正在连接 Grok ACP。' },
+      { type: 'status' as const, text: 'Grok ACP 已就绪。' },
+      {
+        type: 'tool' as const,
+        name: 'search_tool',
+        text: 'query: grok-lark-bridge',
+        status: 'done' as const,
+        kind: 'web_search' as const,
+        inputSummary: 'query: grok-lark-bridge',
+        outputSummary: '{"results":[{"server":"grok-lark-bridge"}]}'
+      },
+      { type: 'status' as const, text: '已发送图片：1.jpg' }
+    ].reduce((current, event) => reduce(current, event), initialState);
+
+    const body = toCardBody(state);
+
+    expect(body).toContain('执行摘要');
+    expect(body).toContain('✓ search_tool：query: grok-lark-bridge');
+    expect(body).toContain('已发送图片：1.jpg');
+    expect(body).not.toContain('[status]');
+    expect(body).not.toContain('正在连接 Grok ACP');
+    expect(body).not.toContain('{"results"');
+  });
 });
