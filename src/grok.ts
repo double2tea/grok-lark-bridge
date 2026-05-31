@@ -774,13 +774,18 @@ export function parseStreamingLine(line: string): GrokEvent | undefined {
   if (parsed === undefined) {
     return { type: 'text', text: sanitizeForCard(trimmed) };
   }
-  const text = findText(parsed);
-  if (!text) {
-    return undefined;
-  }
   const type = isRecord(parsed) ? readString(parsed, 'type') : undefined;
   if (type?.includes('tool')) {
     const name = isRecord(parsed) ? (readString(parsed, 'name') ?? type) : type;
+    const text =
+      findText(parsed) ??
+      (isRecord(parsed)
+        ? (summarizeToolValue(parsed.args) ??
+          summarizeToolValue(parsed.input) ??
+          summarizeToolValue(parsed.result) ??
+          summarizeToolValue(parsed.output))
+        : undefined) ??
+      name;
     const inputSummary = isRecord(parsed)
       ? (summarizeToolValue(parsed.args) ?? summarizeToolValue(parsed.input))
       : undefined;
@@ -798,6 +803,10 @@ export function parseStreamingLine(line: string): GrokEvent | undefined {
       durationMs: isRecord(parsed) ? readDurationMs(parsed) : undefined,
       approvalId: readApprovalId(text)
     });
+  }
+  const text = findText(parsed);
+  if (!text) {
+    return undefined;
   }
   return { type: 'text', text: sanitizeForCard(text) };
 }

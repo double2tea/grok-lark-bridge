@@ -32,6 +32,21 @@ describe('parseStreamingLine', () => {
       status: 'running'
     });
   });
+
+  it('keeps CLI tool events that only include structured args', () => {
+    expect(
+      parseStreamingLine(
+        JSON.stringify({ type: 'tool_call', name: 'shell_command', args: { command: 'npm test' } })
+      )
+    ).toEqual({
+      type: 'tool',
+      name: 'shell_command',
+      text: 'npm test',
+      status: 'running',
+      kind: 'command',
+      inputSummary: 'npm test'
+    });
+  });
 });
 
 describe('parseAcpUpdate', () => {
