@@ -81,10 +81,10 @@ describe('parseAcpUpdate', () => {
     ).toEqual({
       type: 'tool',
       name: 'shell_command',
-      text: '{"command":"npm test"}',
+      text: 'npm test',
       status: 'done',
       kind: 'command',
-      inputSummary: '{"command":"npm test"}',
+      inputSummary: 'npm test',
       outputSummary: 'passed',
       durationMs: 1200
     });
@@ -240,11 +240,11 @@ describe('parseAcpUpdate', () => {
     ).toEqual({
       type: 'tool',
       name: 'Generate image',
-      text: '{"imagePath":"/tmp/venus.png"}',
+      text: 'image: venus.png',
       toolCallId: 'call_1',
       status: 'done',
       kind: 'media',
-      outputSummary: '{"imagePath":"/tmp/venus.png"}',
+      outputSummary: 'image: venus.png',
       artifactPath: '/tmp/venus.png'
     });
   });
@@ -261,25 +261,22 @@ describe('parseAcpUpdate', () => {
     ).toEqual({
       type: 'tool',
       name: 'Generate image',
-      text: '{"imageUrl":"https://example.com/venus.png"}',
+      text: 'image: https://example.com/venus.png',
       toolCallId: 'call_1',
       status: 'done',
       kind: 'media',
-      outputSummary: '{"imageUrl":"https://example.com/venus.png"}',
+      outputSummary: 'image: https://example.com/venus.png',
       artifactUrl: 'https://example.com/venus.png'
     });
   });
 
-  it('keeps generic ACP tool updates as backend notices', () => {
+  it('ignores generic ACP tool updates without useful tool details', () => {
     expect(
       parseAcpUpdate({
         sessionUpdate: 'tool_call_update',
         content: { type: 'text', text: 'tool_call_update' }
       })
-    ).toEqual({
-      type: 'status',
-      text: '收到 Grok 运行事件：tool_call_update (content)'
-    });
+    ).toBeUndefined();
   });
 
   it('keeps non-tool ACP updates as backend notices', () => {

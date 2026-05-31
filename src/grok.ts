@@ -676,7 +676,7 @@ function parseAcpToolUpdate(
     summarizeToolValue(rawOutput) ??
     name;
   if (isGenericToolNoise(sessionUpdate, name, text, update)) {
-    return { type: 'status', text: formatAcpNotice(sessionUpdate, update) };
+    return undefined;
   }
   const outputSummary = summarizeToolValue(rawOutput);
   const inputSummary = summarizeToolValue(rawInput);
@@ -709,7 +709,30 @@ function parseAcpNoticeUpdate(
   if (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'agent_thought_chunk') {
     return undefined;
   }
+  if (isGenericToolNotice(sessionUpdate, update)) {
+    return undefined;
+  }
   return { type: 'status', text: formatAcpNotice(sessionUpdate, update) };
+}
+
+function isGenericToolNotice(sessionUpdate: string, update: Record<string, unknown>): boolean {
+  if (sessionUpdate !== 'tool_call' && sessionUpdate !== 'tool_call_update') {
+    return false;
+  }
+  if (
+    readString(update, 'toolCallId') ||
+    readString(update, 'title') ||
+    readString(update, 'toolName') ||
+    readString(update, 'name') ||
+    update.rawInput !== undefined ||
+    update.rawOutput !== undefined ||
+    update.status !== undefined
+  ) {
+    return false;
+  }
+  const content = toOptionalRecord(update.content);
+  const text = readString(content, 'text');
+  return text === undefined || text === sessionUpdate;
 }
 
 function formatAcpNotice(sessionUpdate: string, update: Record<string, unknown>): string {
@@ -846,6 +869,10 @@ function inferToolKind(name: string): ToolKind | undefined {
 
 function summarizeToolValue(value: unknown): string | undefined {
   if (typeof value === 'string') {
+    const parsed = parseJson(value);
+    if (isRecord(parsed) || Array.isArray(parsed)) {
+      return summarizeToolValue(parsed);
+    }
     const text = compactSummaryText(value);
     return text ? text.slice(0, 160) : undefined;
   }
@@ -904,6 +931,14 @@ function summarizeToolValue(value: unknown): string | undefined {
   const stdoutText = decodeByteArray(value.stdout);
   if (readString(value, 'type') === 'GrepSearch' && stdoutText) {
     return compactSummaryText(stdoutText).slice(0, 160);
+  }
+  const imagePath = extractImagePath(value);
+  if (imagePath) {
+    return `image: ${path.basename(imagePath)}`;
+  }
+  const imageUrl = extractImageUrl(value);
+  if (imageUrl) {
+    return `image: ${compactSummaryText(imageUrl).slice(0, 150)}`;
   }
   const text = findText(value);
   if (text) {
