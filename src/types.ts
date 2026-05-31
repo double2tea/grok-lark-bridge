@@ -61,6 +61,14 @@ export interface IncomingMessage {
   readonly threadId?: string;
   readonly parentId?: string;
   readonly replyToMessageId?: string;
+  readonly attachments: readonly IncomingAttachment[];
+}
+
+export interface IncomingAttachment {
+  readonly kind: 'image' | 'file' | 'audio' | 'media';
+  readonly resourceType: 'image' | 'file' | 'audio' | 'media';
+  readonly fileKey: string;
+  readonly fileName?: string;
 }
 
 export interface SessionKey {

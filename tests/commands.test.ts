@@ -82,7 +82,8 @@ function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
     senderOpenId: 'ou_admin',
     chatType: 'p2p',
     text: '/help',
-    mentionsBot: false
+    mentionsBot: false,
+    attachments: []
   };
   const session = sessions.getOrCreateFromMessage(message);
   return {

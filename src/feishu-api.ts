@@ -7,6 +7,15 @@ import { expandHome, sanitizeForCard, truncate } from './utils.js';
 
 type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 type FeishuFileType = 'opus' | 'mp4' | 'pdf' | 'doc' | 'xls' | 'ppt' | 'stream';
+type MessageResourceType = 'image' | 'file' | 'audio' | 'media';
+
+export interface MessageResourceDownload {
+  readonly messageId: string;
+  readonly fileKey: string;
+  readonly resourceType: MessageResourceType;
+  readonly targetDir: string;
+  readonly fileName?: string;
+}
 
 export interface FeishuApiPort {
   sendText(chatId: string, text: string): Promise<string | undefined>;
@@ -18,6 +27,7 @@ export interface FeishuApiPort {
     sourcePath: string,
     input?: { readonly duration?: number; readonly coverImageKey?: string }
   ): Promise<string | undefined>;
+  downloadMessageResource(input: MessageResourceDownload): Promise<string>;
   patchText(messageId: string, text: string): Promise<void>;
   sendCard(chatId: string, update: FeishuCardUpdate): Promise<string | undefined>;
   patchCard(messageId: string, update: FeishuCardUpdate): Promise<void>;
@@ -110,6 +120,32 @@ export class FeishuApi implements FeishuApiPort {
       file_key: fileKey,
       ...(input.coverImageKey ? { image_key: input.coverImageKey } : {})
     });
+  }
+
+  async downloadMessageResource(input: MessageResourceDownload): Promise<string> {
+    const resource = await retryOnRateLimit(() =>
+      withTimeout(
+        this.client.im.v1.messageResource.get({
+          path: {
+            message_id: input.messageId,
+            file_key: input.fileKey
+          },
+          params: { type: input.resourceType }
+        }),
+        feishuUploadTimeoutMs,
+        'Feishu message resource download timed out'
+      )
+    );
+    fs.mkdirSync(input.targetDir, { recursive: true });
+    const filePath = path.join(
+      input.targetDir,
+      safeFileName(
+        input.fileName ??
+          `${input.resourceType}-${input.fileKey}${defaultExtension(input.resourceType)}`
+      )
+    );
+    await resource.writeFile(filePath);
+    return filePath;
   }
 
   async patchText(messageId: string, text: string): Promise<void> {
@@ -287,6 +323,23 @@ function cardTemplate(status: FeishuCardUpdate['status']): string {
     case 'info':
       return 'blue';
   }
+}
+
+function defaultExtension(type: MessageResourceType): string {
+  switch (type) {
+    case 'image':
+      return '.jpg';
+    case 'audio':
+      return '.opus';
+    case 'media':
+      return '.mp4';
+    case 'file':
+      return '.bin';
+  }
+}
+
+function safeFileName(fileName: string): string {
+  return fileName.replace(/[/\\:\0]/gu, '_').slice(0, 180);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {

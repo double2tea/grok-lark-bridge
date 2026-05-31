@@ -53,6 +53,10 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve('msg_video');
   }
 
+  downloadMessageResource(): Promise<string> {
+    return Promise.resolve('/tmp/resource');
+  }
+
   sendCard(_chatId: string, update: FeishuCardUpdate): Promise<string | undefined> {
     this.cards.push(update);
     return Promise.resolve('msg_card');

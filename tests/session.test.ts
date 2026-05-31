@@ -73,6 +73,7 @@ function message(overrides: Partial<IncomingMessage>): IncomingMessage {
     chatType: 'group',
     text: 'hello',
     mentionsBot: true,
+    attachments: [],
     ...overrides
   };
 }

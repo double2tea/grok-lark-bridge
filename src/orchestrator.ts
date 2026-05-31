@@ -62,14 +62,16 @@ export class RuntimeOrchestrator {
   private readonly commands: CommandRouter;
 
   constructor(
-    config: BridgeConfig,
+    private readonly config: BridgeConfig,
     private readonly api: FeishuApiPort,
     private readonly store: StateStore,
     private readonly sessions: SessionService,
     private readonly grok: GrokBackend,
     private readonly tools: FeishuToolExecutor
   ) {
-    this.commands = new CommandRouter(config, store, sessions, () => this.diagnostics.slice(-20));
+    this.commands = new CommandRouter(this.config, store, sessions, () =>
+      this.diagnostics.slice(-20)
+    );
   }
 
   async handleMessage(message: IncomingMessage): Promise<void> {
@@ -130,7 +132,8 @@ export class RuntimeOrchestrator {
           text: action.command,
           mentionsBot: true,
           rootId: session.rootId ?? undefined,
-          threadId: session.threadId ?? undefined
+          threadId: session.threadId ?? undefined,
+          attachments: []
         },
         session
       );
@@ -472,9 +475,10 @@ export class RuntimeOrchestrator {
     };
 
     try {
+      const prompt = await this.preparePrompt(message);
       const code = await this.grok.run(
         {
-          prompt: message.text,
+          prompt,
           cwd: session.cwd,
           sessionId: session.grokSessionId,
           contextKey: session.key,
@@ -533,6 +537,31 @@ export class RuntimeOrchestrator {
       this.runs.delete(session.key);
       this.store.setSessionRun(session.key, 'idle', null);
     }
+  }
+
+  private async preparePrompt(message: IncomingMessage): Promise<string> {
+    if (message.attachments.length === 0) {
+      return message.text;
+    }
+    const targetDir = path.join(this.config.dataDir, 'inbound-media', message.messageId);
+    const downloaded: string[] = [];
+    for (const attachment of message.attachments) {
+      const filePath = await this.api.downloadMessageResource({
+        messageId: message.messageId,
+        fileKey: attachment.fileKey,
+        resourceType: attachment.resourceType,
+        targetDir,
+        fileName: attachment.fileName
+      });
+      downloaded.push(`${attachment.kind}: ${filePath}`);
+    }
+    const text = message.text.trim();
+    return [
+      text || '用户发送了附件。',
+      '',
+      '用户随消息上传了以下附件，已下载到本地。需要分析图片、视频、音频或文件内容时，直接读取这些本地路径：',
+      ...downloaded.map((line) => `- ${line}`)
+    ].join('\n');
   }
 
   private enqueue(
@@ -852,6 +881,7 @@ function mergeMessages(messages: readonly IncomingMessage[]): IncomingMessage {
   const latest = messages[messages.length - 1];
   return {
     ...latest,
+    attachments: messages.flatMap((message) => message.attachments),
     text: [
       `用户连续发送了 ${String(messages.length)} 条消息，请作为同一轮请求处理：`,
       '',

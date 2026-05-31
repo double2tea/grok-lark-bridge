@@ -35,6 +35,7 @@ class FakeFeishuApi implements FeishuApiPort {
   readonly texts: string[] = [];
   readonly patchedTexts: string[] = [];
   readonly images: string[] = [];
+  readonly downloads: string[] = [];
 
   constructor(
     private readonly failCards = false,
@@ -61,6 +62,16 @@ class FakeFeishuApi implements FeishuApiPort {
 
   sendVideo(): Promise<string | undefined> {
     return Promise.resolve('msg_video');
+  }
+
+  downloadMessageResource(
+    input: Parameters<FeishuApiPort['downloadMessageResource']>[0]
+  ): Promise<string> {
+    fs.mkdirSync(input.targetDir, { recursive: true });
+    const filePath = path.join(input.targetDir, input.fileName ?? `${input.resourceType}.bin`);
+    fs.writeFileSync(filePath, input.fileKey);
+    this.downloads.push(`${input.resourceType}:${input.fileKey}:${filePath}`);
+    return Promise.resolve(filePath);
   }
 
   patchText(_messageId: string, text: string): Promise<void> {
@@ -180,6 +191,32 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.texts).toContain('你');
     expect(api.cards.at(-1)?.body).toContain('文本输出见下方消息');
+  });
+
+  it('downloads inbound media and passes local paths to Grok', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage({
+      ...message('', 'evt_inbound_image'),
+      messageId: 'om_image',
+      attachments: [
+        {
+          kind: 'image',
+          resourceType: 'image',
+          fileKey: 'img_1',
+          fileName: 'upload.png'
+        }
+      ]
+    });
+    await waitFor(() => grok.prompts.length === 1);
+
+    expect(api.downloads[0]).toContain('image:img_1:');
+    expect(grok.prompts[0]).toContain('用户随消息上传了以下附件');
+    expect(grok.prompts[0]).toContain('image:');
+    expect(grok.prompts[0]).toContain('upload.png');
+    expect(grok.prompts[0]).not.toContain('image_key');
   });
 
   it('puts final text in the card when message editing fails', async () => {
@@ -371,7 +408,8 @@ function message(text = '你好', eventId = `evt_${String(Math.random())}`): Inc
     senderOpenId: 'ou_1',
     chatType: 'p2p',
     text,
-    mentionsBot: false
+    mentionsBot: false,
+    attachments: []
   };
 }
 

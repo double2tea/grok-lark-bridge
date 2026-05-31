@@ -1,5 +1,10 @@
 import * as lark from '@larksuiteoapi/node-sdk';
-import type { BridgeConfig, IncomingCardAction, IncomingMessage } from './types.js';
+import type {
+  BridgeConfig,
+  IncomingAttachment,
+  IncomingCardAction,
+  IncomingMessage
+} from './types.js';
 import { isRecord, readString } from './utils.js';
 
 export interface FeishuGatewayHandlers {
@@ -64,7 +69,9 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
   const senderId = toRecord(sender.sender_id);
   const eventId =
     readString(header, 'event_id') ?? readString(root, 'event_id') ?? readRequired(root, 'uuid');
-  const content = readContentText(readRequired(message, 'content'));
+  const contentRaw = readRequired(message, 'content');
+  const content = parseJson(contentRaw);
+  const messageType = readString(message, 'message_type') ?? readString(message, 'msg_type');
   const chatType = readRequired(message, 'chat_type') === 'p2p' ? 'p2p' : 'group';
 
   return {
@@ -73,12 +80,13 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
     messageId: readRequired(message, 'message_id'),
     senderOpenId: readRequired(senderId, 'open_id'),
     chatType,
-    text: content,
+    text: readContentText(content, contentRaw),
     mentionsBot: hasMention(message),
     rootId: readString(message, 'root_id'),
     threadId: readString(message, 'thread_id'),
     parentId: readString(message, 'parent_id'),
-    replyToMessageId: readString(message, 'reply_to_message_id')
+    replyToMessageId: readString(message, 'reply_to_message_id'),
+    attachments: readAttachments(messageType, content)
   };
 }
 
@@ -115,15 +123,64 @@ function logEventError(label: string, error: unknown): void {
   console.error(`Feishu ${label} failed: ${message}`);
 }
 
-function readContentText(content: string): string {
+function parseJson(content: string): unknown {
   try {
-    const parsed = JSON.parse(content) as unknown;
-    if (isRecord(parsed)) {
-      return readString(parsed, 'text') ?? content;
-    }
-    return content;
+    return JSON.parse(content) as unknown;
   } catch {
-    return content;
+    return undefined;
+  }
+}
+
+function readContentText(content: unknown, fallback: string): string {
+  if (!isRecord(content)) {
+    return fallback;
+  }
+  return readString(content, 'text') ?? '';
+}
+
+function readAttachments(
+  messageType: string | undefined,
+  content: unknown
+): readonly IncomingAttachment[] {
+  if (!messageType || !isRecord(content)) {
+    return [];
+  }
+  const kind = attachmentKind(messageType);
+  if (!kind) {
+    return [];
+  }
+  const fileKey =
+    readString(content, 'image_key') ??
+    readString(content, 'file_key') ??
+    readString(content, 'fileKey') ??
+    readString(content, 'key');
+  if (!fileKey) {
+    return [];
+  }
+  const fileName = readString(content, 'file_name') ?? readString(content, 'fileName');
+  return [
+    {
+      kind,
+      resourceType: kind,
+      fileKey,
+      ...(fileName ? { fileName } : {})
+    }
+  ];
+}
+
+function attachmentKind(messageType: string): IncomingAttachment['kind'] | undefined {
+  switch (messageType) {
+    case 'image':
+      return 'image';
+    case 'file':
+      return 'file';
+    case 'audio':
+      return 'audio';
+    case 'media':
+    case 'video':
+      return 'media';
+    default:
+      return undefined;
   }
 }
 

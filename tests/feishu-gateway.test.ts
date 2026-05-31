@@ -32,8 +32,59 @@ describe('Feishu event normalization', () => {
       rootId: 'root_1',
       parentId: 'parent_1',
       replyToMessageId: 'reply_1',
-      threadId: 'thread_1'
+      threadId: 'thread_1',
+      attachments: []
     });
+  });
+
+  it('normalizes inbound media attachments', () => {
+    const message = normalizeMessageEvent({
+      header: { event_id: 'evt_image' },
+      event: {
+        sender: { sender_id: { open_id: 'ou_1' } },
+        message: {
+          message_id: 'om_image',
+          chat_id: 'oc_1',
+          chat_type: 'p2p',
+          message_type: 'image',
+          content: JSON.stringify({ image_key: 'img_1' })
+        }
+      }
+    });
+
+    expect(message.text).toBe('');
+    expect(message.attachments).toEqual([
+      {
+        kind: 'image',
+        resourceType: 'image',
+        fileKey: 'img_1'
+      }
+    ]);
+  });
+
+  it('normalizes inbound video resources', () => {
+    const message = normalizeMessageEvent({
+      header: { event_id: 'evt_media' },
+      event: {
+        sender: { sender_id: { open_id: 'ou_1' } },
+        message: {
+          message_id: 'om_media',
+          chat_id: 'oc_1',
+          chat_type: 'p2p',
+          message_type: 'media',
+          content: JSON.stringify({ file_key: 'file_1', file_name: 'clip.mp4' })
+        }
+      }
+    });
+
+    expect(message.attachments).toEqual([
+      {
+        kind: 'media',
+        resourceType: 'media',
+        fileKey: 'file_1',
+        fileName: 'clip.mp4'
+      }
+    ]);
   });
 
   it('normalizes approval card actions', () => {
