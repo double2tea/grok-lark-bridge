@@ -691,8 +691,8 @@ function parseAcpToolUpdate(
     outputSummary,
     durationMs: readDurationMs(update),
     approvalId: readApprovalId(text) ?? readString(update, 'approvalId'),
-    artifactPath: extractImagePath(rawOutput) ?? extractImagePath(update.content),
-    artifactUrl: extractImageUrl(rawOutput) ?? extractImageUrl(update.content)
+    artifactPath: extractMediaPath(rawOutput) ?? extractMediaPath(update.content),
+    artifactUrl: extractMediaUrl(rawOutput) ?? extractMediaUrl(update.content)
   });
 }
 
@@ -866,6 +866,7 @@ function inferToolKind(name: string): ToolKind | undefined {
   const lower = name.toLowerCase();
   if (lower.includes('search') || lower.includes('web')) return 'web_search';
   if (lower.includes('image') || lower.includes('media') || lower.includes('photo')) return 'media';
+  if (lower.includes('video')) return 'media';
   if (lower.includes('write') || lower.includes('edit') || lower.includes('diff')) {
     return 'file_change';
   }
@@ -960,13 +961,17 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (readString(value, 'type') === 'GrepSearch' && stdoutText) {
     return compactSummaryText(stdoutText).slice(0, 160);
   }
-  const imagePath = extractImagePath(value);
-  if (imagePath) {
-    return `image: ${path.basename(imagePath)}`;
+  const mediaPath = extractMediaPath(value);
+  if (mediaPath) {
+    return `${mediaPathKind(mediaPath)}: ${path.basename(mediaPath)}`;
   }
-  const imageUrl = extractImageUrl(value);
+  const imageUrl = extractNamedUrl(value, ['image_url', 'imageUrl']);
   if (imageUrl) {
     return `image: ${compactSummaryText(imageUrl).slice(0, 150)}`;
+  }
+  const mediaUrl = extractMediaUrl(value);
+  if (mediaUrl) {
+    return `media: ${compactSummaryText(mediaUrl).slice(0, 150)}`;
   }
   const text = findText(value);
   if (text) {
@@ -1010,13 +1015,13 @@ function decodeByteArray(value: unknown): string | undefined {
   return Buffer.from(bytes).toString('utf8');
 }
 
-function extractImagePath(value: unknown): string | undefined {
+function extractMediaPath(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    return isImagePath(value) ? value : undefined;
+    return isMediaPath(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = extractImagePath(item);
+      const found = extractMediaPath(item);
       if (found) {
         return found;
       }
@@ -1026,14 +1031,23 @@ function extractImagePath(value: unknown): string | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  for (const key of ['file_path', 'filePath', 'image_path', 'imagePath', 'path', 'localPath']) {
+  for (const key of [
+    'file_path',
+    'filePath',
+    'image_path',
+    'imagePath',
+    'video_path',
+    'videoPath',
+    'path',
+    'localPath'
+  ]) {
     const item = readString(value, key);
-    if (item && isImagePath(item)) {
+    if (item && isMediaPath(item)) {
       return item;
     }
   }
   for (const item of Object.values(value)) {
-    const found = extractImagePath(item);
+    const found = extractMediaPath(item);
     if (found) {
       return found;
     }
@@ -1041,13 +1055,13 @@ function extractImagePath(value: unknown): string | undefined {
   return undefined;
 }
 
-function extractImageUrl(value: unknown): string | undefined {
+function extractMediaUrl(value: unknown): string | undefined {
   if (typeof value === 'string') {
     return isHttpUrl(value) ? value : undefined;
   }
   if (Array.isArray(value)) {
     for (const item of value) {
-      const found = extractImageUrl(item);
+      const found = extractMediaUrl(item);
       if (found) {
         return found;
       }
@@ -1057,14 +1071,42 @@ function extractImageUrl(value: unknown): string | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
-  for (const key of ['image_url', 'imageUrl', 'url']) {
+  for (const key of ['image_url', 'imageUrl', 'video_url', 'videoUrl', 'url']) {
     const item = readString(value, key);
     if (item && isHttpUrl(item)) {
       return item;
     }
   }
   for (const item of Object.values(value)) {
-    const found = extractImageUrl(item);
+    const found = extractMediaUrl(item);
+    if (found) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function extractNamedUrl(value: unknown, keys: readonly string[]): string | undefined {
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = extractNamedUrl(item, keys);
+      if (found) {
+        return found;
+      }
+    }
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  for (const key of keys) {
+    const item = readString(value, key);
+    if (item && isHttpUrl(item)) {
+      return item;
+    }
+  }
+  for (const item of Object.values(value)) {
+    const found = extractNamedUrl(item, keys);
     if (found) {
       return found;
     }
@@ -1077,6 +1119,21 @@ function isImagePath(value: string): boolean {
     return false;
   }
   return /\.(?:png|jpe?g|gif|webp|bmp)$/iu.test(value);
+}
+
+function isVideoPath(value: string): boolean {
+  if (isHttpUrl(value)) {
+    return false;
+  }
+  return /\.mp4$/iu.test(value);
+}
+
+function isMediaPath(value: string): boolean {
+  return isImagePath(value) || isVideoPath(value);
+}
+
+function mediaPathKind(value: string): 'image' | 'video' {
+  return isVideoPath(value) ? 'video' : 'image';
 }
 
 function isHttpUrl(value: string): boolean {

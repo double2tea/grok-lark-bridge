@@ -352,9 +352,7 @@ export class RuntimeOrchestrator {
       textUpdateMinIntervalMs
     );
     let liveCard = cardMessageId
-      ? new ThrottledCardUpdater((update) =>
-          this.safePatchCard(cardMessageId ?? '', update, session.chatId)
-        )
+      ? new ThrottledCardUpdater((update) => this.safePatchCard(cardMessageId ?? '', update))
       : undefined;
 
     const ensureRunCard = async (): Promise<void> => {
@@ -382,7 +380,7 @@ export class RuntimeOrchestrator {
       }
       if (cardMessageId) {
         liveCard = new ThrottledCardUpdater((update) =>
-          this.safePatchCard(cardMessageId ?? '', update, session.chatId)
+          this.safePatchCard(cardMessageId ?? '', update)
         );
       }
     };
@@ -436,7 +434,21 @@ export class RuntimeOrchestrator {
         if (!fs.existsSync(artifactPath)) {
           agentState = reduceAgentState(agentState, {
             type: 'status',
-            text: `Grok 返回了图片路径，但文件不存在：${artifactPath}`
+            text: `Grok 返回了媒体路径，但文件不存在：${artifactPath}`
+          });
+          liveCard?.request({
+            title: 'Grok 继续处理',
+            status: 'warning',
+            body: toCardBody(agentState),
+            actions: runActions(session.key)
+          });
+          return Promise.resolve();
+        }
+        const artifactKind = localArtifactKind(artifactPath);
+        if (!artifactKind) {
+          agentState = reduceAgentState(agentState, {
+            type: 'status',
+            text: `Grok 返回了暂不支持自动发送的媒体路径：${artifactPath}`
           });
           liveCard?.request({
             title: 'Grok 继续处理',
@@ -447,10 +459,14 @@ export class RuntimeOrchestrator {
           return Promise.resolve();
         }
         try {
-          await this.api.sendImage(session.chatId, artifactPath);
+          if (artifactKind === 'image') {
+            await this.api.sendImage(session.chatId, artifactPath);
+          } else {
+            await this.api.sendVideo(session.chatId, artifactPath);
+          }
           agentState = reduceAgentState(agentState, {
             type: 'status',
-            text: `已发送图片：${path.basename(artifactPath)}`
+            text: `已发送${artifactKind === 'image' ? '图片' : '视频'}：${path.basename(artifactPath)}`
           });
           liveCard?.request({
             title: 'Grok 继续处理',
@@ -461,7 +477,7 @@ export class RuntimeOrchestrator {
         } catch (error) {
           agentState = reduceAgentState(agentState, {
             type: 'status',
-            text: `图片发送失败：${toError(error).message}`
+            text: `媒体发送失败：${toError(error).message}`
           });
           liveCard?.request({
             title: 'Grok 继续处理',
@@ -547,7 +563,7 @@ export class RuntimeOrchestrator {
     const downloaded: string[] = [];
     for (const attachment of message.attachments) {
       const filePath = await this.api.downloadMessageResource({
-        messageId: message.messageId,
+        messageId: attachment.messageId,
         fileKey: attachment.fileKey,
         resourceType: attachment.resourceType,
         targetDir,
@@ -862,7 +878,12 @@ function toHybridCardBody(state: AgentRunState, output: OutputTextState): string
     return body;
   }
   if (output.editFailed) {
-    return body === '（无输出）' ? output.text : `${output.text}\n\n${body}`;
+    const missingText = missingDeliveredText(output);
+    if (!missingText) {
+      return body === '（无输出）' ? '文本输出见下方消息。' : `文本输出见下方消息。\n\n${body}`;
+    }
+    const text = `文本消息编辑失败，补充内容：\n\n${missingText}`;
+    return body === '（无输出）' ? text : `${text}\n\n${body}`;
   }
   if (body === '（无输出）') {
     return '文本输出见下方消息。';
@@ -870,8 +891,25 @@ function toHybridCardBody(state: AgentRunState, output: OutputTextState): string
   return `文本输出见下方消息。\n\n${body}`;
 }
 
+function missingDeliveredText(output: OutputTextState): string {
+  if (output.text.startsWith(output.deliveredText)) {
+    return output.text.slice(output.deliveredText.length).trim();
+  }
+  return output.text.trim();
+}
+
 function resolveArtifactPath(cwd: string, artifactPath: string): string {
   return path.isAbsolute(artifactPath) ? artifactPath : path.resolve(cwd, artifactPath);
+}
+
+function localArtifactKind(filePath: string): 'image' | 'video' | undefined {
+  if (/\.(?:png|jpe?g|gif|webp|bmp)$/iu.test(filePath)) {
+    return 'image';
+  }
+  if (/\.mp4$/iu.test(filePath)) {
+    return 'video';
+  }
+  return undefined;
 }
 
 function mergeMessages(messages: readonly IncomingMessage[]): IncomingMessage {

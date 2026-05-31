@@ -355,6 +355,27 @@ describe('parseAcpUpdate', () => {
     });
   });
 
+  it('extracts local video artifacts from Grok ACP raw output', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_1',
+        title: 'Generate video',
+        status: 'completed',
+        rawOutput: { videoPath: '/tmp/venus.mp4' }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'Generate video',
+      text: 'video: venus.mp4',
+      toolCallId: 'call_1',
+      status: 'done',
+      kind: 'media',
+      outputSummary: 'video: venus.mp4',
+      artifactPath: '/tmp/venus.mp4'
+    });
+  });
+
   it('ignores generic ACP tool updates without useful tool details', () => {
     expect(
       parseAcpUpdate({

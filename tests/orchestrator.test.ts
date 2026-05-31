@@ -35,6 +35,7 @@ class FakeFeishuApi implements FeishuApiPort {
   readonly texts: string[] = [];
   readonly patchedTexts: string[] = [];
   readonly images: string[] = [];
+  readonly videos: string[] = [];
   readonly downloads: string[] = [];
 
   constructor(
@@ -60,7 +61,8 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve('msg_audio');
   }
 
-  sendVideo(): Promise<string | undefined> {
+  sendVideo(_chatId: string, sourcePath: string): Promise<string | undefined> {
+    this.videos.push(sourcePath);
     return Promise.resolve('msg_video');
   }
 
@@ -70,7 +72,7 @@ class FakeFeishuApi implements FeishuApiPort {
     fs.mkdirSync(input.targetDir, { recursive: true });
     const filePath = path.join(input.targetDir, input.fileName ?? `${input.resourceType}.bin`);
     fs.writeFileSync(filePath, input.fileKey);
-    this.downloads.push(`${input.resourceType}:${input.fileKey}:${filePath}`);
+    this.downloads.push(`${input.messageId}:${input.resourceType}:${input.fileKey}:${filePath}`);
     return Promise.resolve(filePath);
   }
 
@@ -179,6 +181,30 @@ describe('RuntimeOrchestrator', () => {
     expect(grok.prompts[0]).toContain('2. 第二条');
   });
 
+  it('downloads batched attachments from their source message', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('描述这张图', 'evt_text'));
+    await orchestrator.handleMessage({
+      ...message('', 'evt_image'),
+      messageId: 'om_image',
+      attachments: [
+        {
+          messageId: 'om_image',
+          kind: 'image',
+          resourceType: 'image',
+          fileKey: 'img_1',
+          fileName: 'upload.png'
+        }
+      ]
+    });
+    await waitFor(() => grok.prompts.length === 1);
+
+    expect(api.downloads[0]).toContain('om_image:image:img_1:');
+  });
+
   it('streams assistant text through an editable text message', async () => {
     const api = new FakeFeishuApi();
     const grok = new FakeGrok([
@@ -203,6 +229,7 @@ describe('RuntimeOrchestrator', () => {
       messageId: 'om_image',
       attachments: [
         {
+          messageId: 'om_image',
           kind: 'image',
           resourceType: 'image',
           fileKey: 'img_1',
@@ -219,7 +246,7 @@ describe('RuntimeOrchestrator', () => {
     expect(grok.prompts[0]).not.toContain('image_key');
   });
 
-  it('puts final text in the card when message editing fails', async () => {
+  it('only puts undelivered text in the card when message editing fails', async () => {
     const api = new FakeFeishuApi(false, true);
     const grok = new FakeGrok([
       { type: 'text', text: '你' },
@@ -231,7 +258,9 @@ describe('RuntimeOrchestrator', () => {
     await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
 
     expect(api.texts).toEqual(['你']);
-    expect(api.cards.at(-1)?.body).toContain('你好呀');
+    expect(api.cards.at(-1)?.body).toContain('文本消息编辑失败，补充内容');
+    expect(api.cards.at(-1)?.body).toContain('好呀');
+    expect(api.cards.at(-1)?.body).not.toContain('你好呀');
   });
 
   it('shows queued follow-up messages while a run is active', async () => {
@@ -319,6 +348,31 @@ describe('RuntimeOrchestrator', () => {
     await waitFor(() => api.images.includes(imagePath));
 
     expect(api.cards.at(-1)?.body).toContain('已发送图片：venus.png');
+  });
+
+  it('sends local video artifacts returned by Grok tools', async () => {
+    const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-artifact-'));
+    dirs.push(artifactDir);
+    const videoPath = path.join(artifactDir, 'venus.mp4');
+    fs.writeFileSync(videoPath, 'mp4');
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok([
+      {
+        type: 'tool',
+        name: 'Generate video',
+        text: 'done',
+        status: 'done',
+        kind: 'media',
+        artifactPath: videoPath
+      }
+    ]);
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('生成视频', 'evt_video'));
+    await waitFor(() => api.videos.includes(videoPath));
+
+    expect(api.images).toEqual([]);
+    expect(api.cards.at(-1)?.body).toContain('已发送视频：venus.mp4');
   });
 
   it('explains image artifact URLs instead of silently dropping them', async () => {

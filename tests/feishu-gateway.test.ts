@@ -55,6 +55,7 @@ describe('Feishu event normalization', () => {
     expect(message.text).toBe('');
     expect(message.attachments).toEqual([
       {
+        messageId: 'om_image',
         kind: 'image',
         resourceType: 'image',
         fileKey: 'img_1'
@@ -79,6 +80,7 @@ describe('Feishu event normalization', () => {
 
     expect(message.attachments).toEqual([
       {
+        messageId: 'om_media',
         kind: 'media',
         resourceType: 'media',
         fileKey: 'file_1',

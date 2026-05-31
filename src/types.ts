@@ -65,6 +65,7 @@ export interface IncomingMessage {
 }
 
 export interface IncomingAttachment {
+  readonly messageId: string;
   readonly kind: 'image' | 'file' | 'audio' | 'media';
   readonly resourceType: 'image' | 'file' | 'audio' | 'media';
   readonly fileKey: string;

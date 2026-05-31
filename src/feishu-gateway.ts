@@ -69,6 +69,7 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
   const senderId = toRecord(sender.sender_id);
   const eventId =
     readString(header, 'event_id') ?? readString(root, 'event_id') ?? readRequired(root, 'uuid');
+  const messageId = readRequired(message, 'message_id');
   const contentRaw = readRequired(message, 'content');
   const content = parseJson(contentRaw);
   const messageType = readString(message, 'message_type') ?? readString(message, 'msg_type');
@@ -77,7 +78,7 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
   return {
     eventId,
     chatId: readRequired(message, 'chat_id'),
-    messageId: readRequired(message, 'message_id'),
+    messageId,
     senderOpenId: readRequired(senderId, 'open_id'),
     chatType,
     text: readContentText(content, contentRaw),
@@ -86,7 +87,7 @@ export function normalizeMessageEvent(data: unknown): IncomingMessage {
     threadId: readString(message, 'thread_id'),
     parentId: readString(message, 'parent_id'),
     replyToMessageId: readString(message, 'reply_to_message_id'),
-    attachments: readAttachments(messageType, content)
+    attachments: readAttachments(messageId, messageType, content)
   };
 }
 
@@ -139,6 +140,7 @@ function readContentText(content: unknown, fallback: string): string {
 }
 
 function readAttachments(
+  messageId: string,
   messageType: string | undefined,
   content: unknown
 ): readonly IncomingAttachment[] {
@@ -160,6 +162,7 @@ function readAttachments(
   const fileName = readString(content, 'file_name') ?? readString(content, 'fileName');
   return [
     {
+      messageId,
       kind,
       resourceType: kind,
       fileKey,
