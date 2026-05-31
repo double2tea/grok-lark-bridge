@@ -502,6 +502,9 @@ function parseAcpNoticeUpdate(
   if (!sessionUpdate) {
     return undefined;
   }
+  if (sessionUpdate === 'available_commands_update') {
+    return undefined;
+  }
   if (sessionUpdate === 'agent_message_chunk' || sessionUpdate === 'agent_thought_chunk') {
     return undefined;
   }
@@ -642,12 +645,15 @@ function inferToolKind(name: string): ToolKind | undefined {
 
 function summarizeToolValue(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    const text = sanitizeForCard(value);
+    const text = compactSummaryText(value);
     return text ? text.slice(0, 160) : undefined;
   }
   if (Array.isArray(value)) {
+    if (value.length > 0) {
+      return `${String(value.length)} items`;
+    }
     const json = JSON.stringify(value);
-    return json.length > 0 ? sanitizeForCard(json).slice(0, 160) : undefined;
+    return json.length > 0 ? compactSummaryText(json).slice(0, 160) : undefined;
   }
   if (!isRecord(value)) {
     return undefined;
@@ -655,12 +661,56 @@ function summarizeToolValue(value: unknown): string | undefined {
   if (Object.keys(value).length === 0) {
     return undefined;
   }
+  const query = readString(value, 'query');
+  if (query) {
+    return `query: ${compactSummaryText(query).slice(0, 140)}`;
+  }
+  const command = readString(value, 'command');
+  if (command) {
+    return compactSummaryText(command).slice(0, 160);
+  }
+  const targetDirectory =
+    readString(value, 'target_directory') ?? readString(value, 'targetDirectory');
+  if (targetDirectory) {
+    return `dir: ${compactSummaryText(targetDirectory).slice(0, 150)}`;
+  }
+  const targetFile = readString(value, 'target_file') ?? readString(value, 'targetFile');
+  if (targetFile) {
+    return `file: ${compactSummaryText(targetFile).slice(0, 145)}`;
+  }
+  const prompt = readString(value, 'prompt');
+  if (prompt) {
+    return `prompt: ${compactSummaryText(prompt).slice(0, 140)}`;
+  }
+  const results = value.results;
+  if (Array.isArray(results)) {
+    return `${String(results.length)} results`;
+  }
+  const contentRecord = isRecord(value.Content) ? value.Content : toOptionalRecord(value.content);
+  const contentText = readString(contentRecord, 'content') ?? readString(value, 'content');
+  if (readString(value, 'type') === 'ListDir' && contentText) {
+    return `${String(countListEntries(contentText))} entries`;
+  }
+  if (readString(value, 'type') === 'ReadFile' && contentText) {
+    return `${String(contentText.length)} chars`;
+  }
   const text = findText(value);
   if (text) {
-    return sanitizeForCard(text).slice(0, 160);
+    return compactSummaryText(text).slice(0, 160);
   }
   const json = JSON.stringify(value);
-  return json.length > 0 ? sanitizeForCard(json).slice(0, 160) : undefined;
+  return json.length > 0 ? compactSummaryText(json).slice(0, 160) : undefined;
+}
+
+function compactSummaryText(value: string): string {
+  return sanitizeForCard(value).replace(/\s+/gu, ' ').trim();
+}
+
+function countListEntries(value: string): number {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- ')).length;
 }
 
 function extractImagePath(value: unknown): string | undefined {

@@ -93,11 +93,81 @@ describe('parseAcpUpdate', () => {
     ).toEqual({
       type: 'tool',
       name: 'Generate image',
-      text: '{"prompt":"JARVIS portrait"}',
+      text: 'prompt: JARVIS portrait',
       toolCallId: 'call_1',
       status: 'running',
       kind: 'media',
-      inputSummary: '{"prompt":"JARVIS portrait"}'
+      inputSummary: 'prompt: JARVIS portrait'
+    });
+  });
+
+  it('keeps search tool summaries concise', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_search',
+        title: 'search_tool',
+        status: 'completed',
+        rawInput: { variant: 'SearchTool', query: 'grok-lark-bridge lark feishu tools' },
+        rawOutput: { results: [{ title: 'one' }, { title: 'two' }] }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'search_tool',
+      text: 'query: grok-lark-bridge lark feishu tools',
+      toolCallId: 'call_search',
+      status: 'done',
+      kind: 'web_search',
+      inputSummary: 'query: grok-lark-bridge lark feishu tools',
+      outputSummary: '2 results'
+    });
+  });
+
+  it('keeps directory tool summaries concise', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_dir',
+        title: 'list_dir',
+        status: 'completed',
+        rawInput: { variant: 'ListDir', target_directory: '.' },
+        rawOutput: {
+          type: 'ListDir',
+          Content: { content: '- /tmp/project/\n - src/\n - package.json' }
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'list_dir',
+      text: 'dir: .',
+      toolCallId: 'call_dir',
+      status: 'done',
+      inputSummary: 'dir: .',
+      outputSummary: '3 entries'
+    });
+  });
+
+  it('keeps file read tool summaries concise', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'call_file',
+        title: 'read_file',
+        status: 'completed',
+        rawInput: { variant: 'ReadFile', target_file: 'README.md' },
+        rawOutput: {
+          type: 'ReadFile',
+          Content: { content: 'hello world' }
+        }
+      })
+    ).toEqual({
+      type: 'tool',
+      name: 'read_file',
+      text: 'file: README.md',
+      toolCallId: 'call_file',
+      status: 'done',
+      inputSummary: 'file: README.md',
+      outputSummary: '11 chars'
     });
   });
 
@@ -165,6 +235,16 @@ describe('parseAcpUpdate', () => {
       type: 'status',
       text: '收到 Grok 运行事件：session_started (content)'
     });
+  });
+
+  it('ignores ACP available command metadata updates', () => {
+    expect(
+      parseAcpUpdate({
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [],
+        _meta: {}
+      })
+    ).toBeUndefined();
   });
 
   it('keeps non-tool ACP updates without content as backend notices', () => {
