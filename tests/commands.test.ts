@@ -116,6 +116,26 @@ describe('CommandRouter', () => {
     expect(result.text).toContain('仅显示前 6 个切换按钮。');
     store.close();
   });
+
+  it('uses workspace-specific actions after workspace mutations', () => {
+    const { router, message, session, store } = makeRouter();
+    store.saveWorkspace('tmp', '/tmp');
+
+    const result = router.handle({ ...message, text: '/workspace use tmp' }, session);
+
+    expect(result.actions).toEqual([
+      {
+        text: '工作目录列表',
+        type: 'default',
+        value: {
+          action: 'run_command',
+          command: '/workspace list',
+          context_key: session.key
+        }
+      }
+    ]);
+    store.close();
+  });
 });
 
 function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {

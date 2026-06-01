@@ -38,7 +38,12 @@ async function main(): Promise<void> {
     process.stdout.write(`Registered by open_id: ${result.user_info.open_id}\n`);
   }
   process.stdout.write(
-    'Next: import config/feishu-permissions.json scopes and enable bot WebSocket events.\n'
+    [
+      'Next:',
+      '1. Import config/feishu-permissions.json scopes and enable bot WebSocket events.',
+      '2. If you want official Lark MCP, import config/official-lark-mcp-permissions.json, add OAuth redirect URL http://localhost:3000/callback, publish the app, then run npm run setup:lark-mcp.',
+      ''
+    ].join('\n')
   );
 }
 

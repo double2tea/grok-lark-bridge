@@ -1,0 +1,31 @@
+{
+  "scopes": {
+    "tenant": [
+      "im:message:send_as_bot",
+      "im:message:readonly",
+      "contact:user.id:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.p2p_msg:readonly"
+    ],
+    "user": [
+      "im:chat:read",
+      "im:chat.members:read",
+      "im:message:readonly",
+      "wiki:wiki:readonly",
+      "docx:document:readonly",
+      "docx:document:create",
+      "search:docs:read",
+      "docs:document:import",
+      "docs:document.media:upload",
+      "docs:permission.member:create",
+      "base:app:create",
+      "base:table:create",
+      "base:table:read",
+      "base:field:read",
+      "base:record:retrieve",
+      "base:record:create",
+      "base:record:update",
+      "contact:user.id:readonly"
+    ]
+  }
+}

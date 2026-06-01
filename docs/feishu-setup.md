@@ -58,7 +58,17 @@ npm run feishu:check
 
 `doctor` 检查本地配置；`feishu:check` 会向飞书换取 `tenant_access_token`，用于确认 App ID/Secret 有效。
 
-## 5. Start
+## 5. Optional: Official Lark MCP
+
+如果你希望 Grok 像用户本人一样搜索和操作飞书云文档、多维表格、日历等资源，推荐在同一个飞书自建应用上接入官方 `@larksuiteoapi/lark-mcp`。不需要创建第二个机器人，但需要为同一个应用补充用户身份权限和 OAuth 授权。应用发布后运行：
+
+```bash
+npm run setup:lark-mcp
+```
+
+详见 [official-lark-mcp.md](official-lark-mcp.md)。
+
+## 6. Start
 
 ```bash
 npm run dev

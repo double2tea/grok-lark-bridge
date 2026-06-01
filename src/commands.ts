@@ -130,7 +130,11 @@ export class CommandRouter {
           throw new Error('/workspace save requires a name');
         }
         this.store.saveWorkspace(name, session.cwd);
-        return { handled: true, text: `Workspace saved: ${name}` };
+        return {
+          handled: true,
+          text: `Workspace saved: ${name}`,
+          actions: [workspaceListAction(session.key)]
+        };
       }
       case 'use': {
         if (!name) {
@@ -141,7 +145,12 @@ export class CommandRouter {
           throw new Error(`Unknown workspace: ${name}`);
         }
         const updated = this.sessions.changeCwd(session, cwd);
-        return { handled: true, text: `Workspace selected: ${name}`, session: updated };
+        return {
+          handled: true,
+          text: `Workspace selected: ${name}`,
+          session: updated,
+          actions: [workspaceListAction(updated.key)]
+        };
       }
       case 'remove': {
         if (!name) {
@@ -150,7 +159,8 @@ export class CommandRouter {
         const removed = this.store.removeWorkspace(name);
         return {
           handled: true,
-          text: removed ? `Workspace removed: ${name}` : `Unknown workspace: ${name}`
+          text: removed ? `Workspace removed: ${name}` : `Unknown workspace: ${name}`,
+          actions: [workspaceListAction(session.key)]
         };
       }
       default:
@@ -199,6 +209,14 @@ function workspaceUseAction(name: string, contextKey: string): CardAction {
     text: `切换 ${name}`,
     type: 'primary',
     value: { action: 'run_command', command: `/workspace use ${name}`, context_key: contextKey }
+  };
+}
+
+function workspaceListAction(contextKey: string): CardAction {
+  return {
+    text: '工作目录列表',
+    type: 'default',
+    value: { action: 'run_command', command: '/workspace list', context_key: contextKey }
   };
 }
 

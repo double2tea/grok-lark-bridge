@@ -67,7 +67,7 @@ npm run feishu:check
 
 普通聊天回复不需要 MCP：桥接服务会直接用飞书 SDK / OpenAPI 把 Grok 的文本结果发回当前会话。
 
-只有当你希望 Grok 主动创建飞书任务、读写文档、发送本地文件/图片/音频/视频、查询多维表格等，才需要把本项目的 MCP server 配给 Grok。
+本项目自带的 MCP server 只建议用于桥接专属能力：发送本地文件/图片/音频/视频回当前飞书会话、读取当前聊天历史、以及桥接审批结果查询。通用飞书 OpenAPI 能力（云文档搜索、Wiki、Docx、多维表格、日历、通讯录等）建议优先接入飞书官方 OpenAPI MCP。
 
 把本项目的 MCP server 加入 Grok 的 MCP 配置。构建后命令为：
 
@@ -82,7 +82,25 @@ npm run feishu:check
 }
 ```
 
-Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `requested_by_open_id`，调用飞书工具时必须原样传入这两个字段。
+Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `requested_by_open_id`，调用本项目自带的 bridge-local MCP 工具时必须原样传入这两个字段。调用官方 `lark-mcp` 工具时不要传入这些桥接专属字段，除非该工具 schema 明确要求。
+
+### 推荐：同时接入飞书官方 OpenAPI MCP
+
+复用本项目已经创建的飞书自建应用即可，不需要创建第二个机器人。Bridge 继续使用同一个 App ID / Secret 以应用身份收发消息；官方 MCP 使用同一个 App ID / Secret 做一次用户 OAuth 授权，以用户身份访问你有权限的云文档、多维表格、日历等资源。
+
+在飞书开放平台补充用户身份权限、配置 OAuth 重定向 URL、发布应用后，运行项目封装脚本：
+
+```bash
+npm run setup:lark-mcp
+```
+
+该脚本会复用 bridge 已保存的 App ID / Secret，生成双 MCP 配置到 `~/.grok-lark-bridge/grok-mcp.config.json`，并启动官方 MCP 的一次性用户 OAuth 登录。只想生成配置、不立刻登录时可运行：
+
+```bash
+npm run setup:lark-mcp -- --config-only
+```
+
+官方 MCP 需要在飞书开放平台为同一个应用补充用户身份权限、配置 OAuth 重定向 URL，并发布应用版本。更完整步骤见 [docs/official-lark-mcp.md](docs/official-lark-mcp.md)。
 
 ### 审批结果反馈机制（重要）
 

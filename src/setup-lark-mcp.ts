@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { loadConfig } from './config.js';
+import type { BridgeConfig } from './types.js';
+
+const larkMcpPackage = '@larksuiteoapi/lark-mcp';
+const generatedMcpConfigFile = 'grok-mcp.config.json';
+
+export function buildLarkMcpLoginArgs(
+  config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
+): readonly string[] {
+  return ['-y', larkMcpPackage, 'login', '-a', config.feishuAppId, '-s', config.feishuAppSecret];
+}
+
+export function buildLarkMcpServerArgs(
+  config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
+): readonly string[] {
+  return [
+    '-y',
+    larkMcpPackage,
+    'mcp',
+    '-a',
+    config.feishuAppId,
+    '-s',
+    config.feishuAppSecret,
+    '--oauth',
+    '--token-mode',
+    'user_access_token'
+  ];
+}
+
+export function buildCombinedMcpConfig(
+  projectRoot: string,
+  config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
+): Record<string, unknown> {
+  return {
+    mcpServers: {
+      'grok-lark-bridge': {
+        command: 'node',
+        args: [path.join(projectRoot, 'dist', 'mcp-server.js')]
+      },
+      'lark-mcp': {
+        command: 'npx',
+        args: buildLarkMcpServerArgs(config)
+      }
+    }
+  };
+}
+
+export function generatedMcpConfigPath(dataDir: string): string {
+  return path.join(dataDir, generatedMcpConfigFile);
+}
+
+function main(): void {
+  const args = new Set(process.argv.slice(2));
+  const configOnly = args.has('--config-only');
+  const projectRoot = process.env.GROK_LARK_BRIDGE_PROJECT_ROOT ?? process.cwd();
+  const config = loadConfig(projectRoot);
+  const outputPath = generatedMcpConfigPath(config.dataDir);
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(
+    outputPath,
+    `${JSON.stringify(buildCombinedMcpConfig(projectRoot, config), null, 2)}\n`,
+    { mode: 0o600 }
+  );
+
+  process.stdout.write(`Generated Grok MCP config: ${outputPath}\n`);
+  process.stdout.write(
+    [
+      'Use that JSON to configure Grok with both MCP servers.',
+      'The official lark-mcp server is configured with --oauth and --token-mode user_access_token.',
+      ''
+    ].join('\n')
+  );
+
+  if (configOnly) {
+    process.stdout.write('Skipped official lark-mcp login because --config-only was provided.\n');
+    return;
+  }
+
+  process.stdout.write('Starting official lark-mcp user OAuth login...\n');
+  const result = spawnSync('npx', buildLarkMcpLoginArgs(config), { stdio: 'inherit' });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    process.exitCode = result.status ?? 1;
+    return;
+  }
+  process.stdout.write('Official lark-mcp login finished.\n');
+}
+
+function isMainModule(): boolean {
+  const entryPath = process.argv[1];
+  return import.meta.url === pathToFileURL(entryPath).href;
+}
+
+if (isMainModule()) {
+  try {
+    main();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Official lark-mcp setup failed: ${message}\n`);
+    process.exitCode = 1;
+  }
+}
