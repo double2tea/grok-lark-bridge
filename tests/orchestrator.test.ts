@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FeishuApiPort, MessageReplyOptions } from '../src/feishu-api.js';
-import { FeishuToolExecutor } from '../src/feishu-tools.js';
 import { GrokRunAbortedError } from '../src/grok.js';
 import { RuntimeOrchestrator } from '../src/orchestrator.js';
 import { SessionService } from '../src/session.js';
@@ -195,6 +194,7 @@ describe('RuntimeOrchestrator', () => {
     await waitFor(() => api.texts.some((text) => text.includes('Grok 卡片发送失败')));
 
     expect(api.texts.join('\n')).toContain('Grok 卡片发送失败');
+    expect(api.texts.join('\n')).toContain('cwd: /tmp');
   });
 
   it('batches quick consecutive messages into one Grok run', async () => {
@@ -588,9 +588,8 @@ function createRuntime(
   const store = new StateStore(dir);
   stores.push(store);
   const sessions = new SessionService(store, config.access, config.defaultWorkspaceRoot);
-  const tools = new FeishuToolExecutor(api, store, sessions);
   return {
-    orchestrator: new RuntimeOrchestrator(config, api, store, sessions, grok, tools),
+    orchestrator: new RuntimeOrchestrator(config, api, store, sessions, grok),
     api,
     store
   };

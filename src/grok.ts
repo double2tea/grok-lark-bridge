@@ -69,17 +69,6 @@ interface NativeSessionEvent {
 
 type NativeSessionEventRecorder = (event: NativeSessionEvent) => void;
 
-interface AcpMcpServer {
-  readonly name: string;
-  readonly type: 'stdio';
-  readonly command: string;
-  readonly args: readonly string[];
-  readonly env: readonly {
-    readonly name: string;
-    readonly value: string;
-  }[];
-}
-
 type JsonRpcId = number | string;
 
 interface TerminalExitStatus {
@@ -264,7 +253,7 @@ export class GrokAcpBackend implements GrokBackend {
           {
             sessionId: input.nativeSessionId,
             cwd: input.cwd,
-            mcpServers: [this.bridgeMcpServer()]
+            mcpServers: []
           },
           180000
         );
@@ -291,7 +280,7 @@ export class GrokAcpBackend implements GrokBackend {
   private async createSession(input: GrokRunInput): Promise<AcpSession> {
     const result = await this.request('session/new', {
       cwd: input.cwd,
-      mcpServers: [this.bridgeMcpServer()]
+      mcpServers: []
     });
     const acpSessionId = readString(result, 'sessionId');
     if (!acpSessionId) {
@@ -365,26 +354,6 @@ export class GrokAcpBackend implements GrokBackend {
       request.reject(error);
     }
     this.pending.clear();
-  }
-
-  private bridgeMcpServer(): AcpMcpServer {
-    const distServer = path.join(this.projectRoot, 'dist', 'mcp-server.js');
-    if (fs.existsSync(distServer)) {
-      return {
-        name: 'grok-lark-bridge',
-        type: 'stdio',
-        command: process.execPath,
-        args: [distServer],
-        env: [{ name: 'GROK_LARK_BRIDGE_PROJECT_ROOT', value: this.projectRoot }]
-      };
-    }
-    return {
-      name: 'grok-lark-bridge',
-      type: 'stdio',
-      command: 'npx',
-      args: ['tsx', path.join(this.projectRoot, 'src', 'mcp-server.ts')],
-      env: [{ name: 'GROK_LARK_BRIDGE_PROJECT_ROOT', value: this.projectRoot }]
-    };
   }
 
   private handleLine(line: string): void {
@@ -755,7 +724,7 @@ function parseAcpToolUpdate(
     inputSummary,
     outputSummary,
     durationMs: readDurationMs(update),
-    approvalId: readApprovalId(text) ?? readString(update, 'approvalId'),
+    approvalId: readString(update, 'approvalId'),
     artifactPath: extractMediaPath(rawOutput) ?? extractMediaPath(update.content),
     artifactUrl: extractMediaUrl(rawOutput) ?? extractMediaUrl(update.content)
   });
@@ -865,8 +834,7 @@ export function parseStreamingLine(line: string): GrokEvent | undefined {
       kind: inferToolKind(name),
       inputSummary,
       outputSummary,
-      durationMs: isRecord(parsed) ? readDurationMs(parsed) : undefined,
-      approvalId: readApprovalId(text)
+      durationMs: isRecord(parsed) ? readDurationMs(parsed) : undefined
     });
   }
   const text = findText(parsed);
@@ -1215,10 +1183,6 @@ function readDurationMs(record: Record<string, unknown>): number | undefined {
   return undefined;
 }
 
-function readApprovalId(text: string): string | undefined {
-  return /Approval requested:\s*([A-Za-z0-9_-]+)/u.exec(text)?.[1];
-}
-
 function formatAcpSessionStatus(resolution: AcpSessionResolution): string | undefined {
   switch (resolution.source) {
     case 'reused':
@@ -1391,13 +1355,10 @@ function buildPrompt(input: GrokRunInput): string {
     'You are running behind Grok Lark Bridge.',
     `Feishu context_key: ${input.contextKey}`,
     `Feishu requested_by_open_id: ${input.requestedByOpenId}`,
-    'For ordinary chat replies, do not call bridge-local Feishu MCP tools. Return assistant text normally; the bridge will send it to Feishu.',
+    'For ordinary chat replies, return assistant text normally; the bridge will send it to Feishu.',
+    'Do not call a bridge-local Feishu MCP server; this bridge exposes zero local MCP tools.',
     'For general Feishu OpenAPI work such as docs, wiki, bitable, search, calendar or contact operations, prefer the official Lark/Feishu OpenAPI MCP server when it is available.',
-    'Use bridge-local Feishu MCP tools only for bridge-specific actions such as sending local artifacts back to the current Feishu conversation, reading the current chat history, or polling bridge approval results.',
-    'When calling any bridge-local Feishu MCP tool, pass context_key exactly as shown above.',
-    'When calling any bridge-local Feishu MCP tool, pass requested_by_open_id exactly as shown above.',
     'Do not pass bridge-only context_key or requested_by_open_id to official Lark/Feishu MCP tools unless that tool schema explicitly asks for them.',
-    'If a bridge-local Feishu write tool returns "Approval requested: <id>", call lark_get_approval_result with that id until it is approved or rejected.',
     'Treat the user prompt below as the latest message in an ongoing Feishu conversation.',
     '',
     input.prompt

@@ -78,27 +78,6 @@ describe('run state card body', () => {
         status: 'done' as const,
         kind: 'generic' as const,
         inputSummary: 'prompt: Epic cinematic portrait on a rocky cliff'
-      },
-      {
-        type: 'tool' as const,
-        name: 'use_tool',
-        status: 'done' as const,
-        kind: 'mcp' as const,
-        inputSummary: 'grok-lark-bridge__lark_msg_send_image: image: 5.jpg'
-      },
-      {
-        type: 'tool' as const,
-        name: 'use_tool',
-        status: 'done' as const,
-        kind: 'mcp' as const,
-        inputSummary: 'grok-lark-bridge__lark_msg_send_image: image: 6.jpg'
-      },
-      {
-        type: 'tool' as const,
-        name: 'use_tool',
-        status: 'done' as const,
-        kind: 'mcp' as const,
-        inputSummary: 'grok-lark-bridge__lark_msg_send_image: image: 4.jpg'
       }
     ].reduce((current, event) => reduce(current, event), initialState);
 
@@ -107,10 +86,7 @@ describe('run state card body', () => {
     expect(body).toContain("<text_tag color='green'>完成</text_tag> **读取附件**");
     expect(body).toContain('└ `image-img_v3_02128_66f78c20-91ec-4da2-bb77-a6e73c2d8e5g.jpg`');
     expect(body).toContain("<text_tag color='green'>完成</text_tag> **图片编辑 ×3**");
-    expect(body).toContain("<text_tag color='green'>完成</text_tag> **发送图片 ×3**");
-    expect(body).toContain('└ `5.jpg、6.jpg、4.jpg`');
     expect(body).not.toContain('/Users/chacha/.grok-lark-bridge');
     expect(body).not.toContain('Cinematic movie still');
-    expect(body).not.toContain('grok-lark-bridge__lark_msg_send_image');
   });
 });

@@ -40,13 +40,9 @@ describe('setup-lark-mcp', () => {
     ]);
   });
 
-  it('builds a combined bridge and official MCP config', () => {
+  it('builds an official-only MCP config', () => {
     expect(buildCombinedMcpConfig('/repo', config)).toEqual({
       mcpServers: {
-        'grok-lark-bridge': {
-          command: 'node',
-          args: [path.join('/repo', 'dist', 'mcp-server.js')]
-        },
         'lark-mcp': {
           command: 'npx',
           args: buildLarkMcpServerArgs(config)

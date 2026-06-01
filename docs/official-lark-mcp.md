@@ -1,8 +1,6 @@
 # Official Lark MCP
 
-This project intentionally keeps its built-in MCP server narrow. Use it for bridge-local actions such as sending local artifacts back to the active Feishu conversation, reading the current chat history, and polling bridge approvals.
-
-For general Feishu OpenAPI work, use the official Lark OpenAPI MCP server:
+Grok Lark Bridge now exposes zero bridge-local MCP tools. The bridge handles Feishu message delivery, cards, WebSocket events, and local image/video artifact return internally. Use the official Lark OpenAPI MCP server for general Feishu resource operations.
 
 - package: `@larksuiteoapi/lark-mcp`
 - docs: https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/mcp_integration/mcp_installation
@@ -12,7 +10,7 @@ For general Feishu OpenAPI work, use the official Lark OpenAPI MCP server:
 
 Use the same Feishu self-built app already configured for Grok Lark Bridge. You do not need a second bot.
 
-- Bridge uses `FEISHU_APP_ID` and `FEISHU_APP_SECRET` to get `tenant_access_token` for bot messages, cards, WebSocket events, and bridge-local MCP tools.
+- Bridge uses `FEISHU_APP_ID` and `FEISHU_APP_SECRET` to get `tenant_access_token` for bot messages, cards, and WebSocket events.
 - Official MCP uses the same `FEISHU_APP_ID` and `FEISHU_APP_SECRET` plus user OAuth to get `user_access_token` for user-visible docs, wiki, bitable, calendar, search, and related APIs.
 
 This means there is one app, but two identity modes.
@@ -22,9 +20,10 @@ This means there is one app, but two identity modes.
 In Feishu Open Platform, update the same app:
 
 1. Keep the bot capability and existing event subscriptions used by the bridge.
-2. Add the official MCP user scopes needed for your tools. `config/official-lark-mcp-permissions.json` is a starting point based on the official MCP bot guide. This file is for Feishu Open Platform batch import only; the bridge runtime still reads `config/feishu-permissions.json` for bridge-local tools.
-3. Add an OAuth redirect URL required by the official MCP login flow.
-4. Publish the app version so the permission and OAuth changes take effect.
+2. Import the bridge runtime scopes from `config/feishu-permissions.json`.
+3. Add the official MCP user scopes needed for your tools. `config/official-lark-mcp-permissions.json` is a starting point for Feishu Open Platform batch import.
+4. Add the OAuth redirect URL required by the official MCP login flow.
+5. Publish the app version so the permission and OAuth changes take effect.
 
 ## One Command Setup
 
@@ -34,7 +33,7 @@ After the app has the official MCP permissions, OAuth redirect URL, and a publis
 npm run setup:lark-mcp
 ```
 
-This command reuses the bridge app credentials already stored by `npm run setup`, writes a combined MCP config to `~/.grok-lark-bridge/grok-mcp.config.json`, and starts the official MCP user OAuth login. Open the printed authorization URL and approve it with the Feishu user account whose resources Grok should access.
+This command reuses the bridge app credentials already stored by `npm run setup`, writes an official-only MCP config to `~/.grok-lark-bridge/grok-mcp.config.json`, and starts the official MCP user OAuth login. Open the printed authorization URL and approve it with the Feishu user account whose resources Grok should access.
 
 To generate the MCP config without starting OAuth login:
 
@@ -42,15 +41,11 @@ To generate the MCP config without starting OAuth login:
 npm run setup:lark-mcp -- --config-only
 ```
 
-The generated config contains both MCP servers:
+The generated config contains only the official MCP server:
 
 ```json
 {
   "mcpServers": {
-    "grok-lark-bridge": {
-      "command": "node",
-      "args": ["/absolute/path/to/Grok Lark Bridge/dist/mcp-server.js"]
-    },
     "lark-mcp": {
       "command": "npx",
       "args": [
@@ -82,10 +77,4 @@ Use the official `lark-mcp` server for normal Feishu OpenAPI work:
 - create or update bitable apps, tables, fields, and records
 - calendar and contact operations
 
-Use `grok-lark-bridge` only for bridge-specific actions:
-
-- send local image, audio, video, or file artifacts back to the current Feishu conversation
-- read the active Feishu chat history
-- poll bridge approval results
-
-Bridge-local tools require `context_key` and `requested_by_open_id`. Official Lark MCP tools do not use those bridge-only fields unless a tool schema explicitly asks for them.
+Do not configure or call a `grok-lark-bridge` MCP server. Bridge-only context fields such as `context_key` and `requested_by_open_id` are for internal routing and should not be passed to official MCP tools unless that tool schema explicitly asks for them.

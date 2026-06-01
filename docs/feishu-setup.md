@@ -39,7 +39,7 @@ npm run setup
 
 在权限管理中批量导入 `config/feishu-permissions.json`，提交管理员审批。
 
-最小聊天桥接只需要机器人消息能力和事件订阅。`config/feishu-permissions.json` 里的文档、任务、日历、多维表格、通讯录等权限，是给 Grok 通过 MCP 主动操作飞书资源用的；不用这些工具时可以不申请。
+Bridge runtime 需要机器人消息能力和事件订阅；如果要下载用户随消息上传的附件，还需要 `im:message:readonly`。文档、任务、日历、多维表格、通讯录等通用飞书操作交给官方 `lark-mcp`，对应用户身份权限见 `config/official-lark-mcp-permissions.json`。
 
 ## 4. Local Checks
 

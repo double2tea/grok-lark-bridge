@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CommandRouter } from './commands.js';
 import type { FeishuApiPort, MessageReplyOptions } from './feishu-api.js';
-import { FeishuToolExecutor } from './feishu-tools.js';
 import { GrokRunAbortedError } from './grok.js';
 import type {
   BridgeConfig,
@@ -67,8 +66,7 @@ export class RuntimeOrchestrator {
     private readonly api: FeishuApiPort,
     private readonly store: StateStore,
     private readonly sessions: SessionService,
-    private readonly grok: GrokBackend,
-    private readonly tools: FeishuToolExecutor
+    private readonly grok: GrokBackend
   ) {
     this.commands = new CommandRouter(this.config, store, sessions, () =>
       this.diagnostics.slice(-20)
@@ -139,71 +137,6 @@ export class RuntimeOrchestrator {
         session
       );
       return;
-    }
-    if (!action.approvalId) {
-      return;
-    }
-    if (action.action === 'approval_reject') {
-      this.tools.rejectPendingApproval(action.approvalId);
-      if (action.messageId) {
-        await this.safePatchCard(action.messageId, {
-          title: '飞书操作已拒绝',
-          status: 'warning',
-          body: `approval: ${action.approvalId}`
-        });
-      }
-      return;
-    }
-    if (action.action !== 'approval_approve') {
-      return;
-    }
-
-    try {
-      const result = await this.tools.executePendingApproval(action.approvalId);
-      if (action.messageId) {
-        await this.safePatchCard(action.messageId, {
-          title: '飞书操作已执行',
-          status: 'success',
-          body: result.text
-        });
-      }
-
-      // Link approval result back into any active main agent run card for this context (better continuity)
-      const activeRun = action.contextKey ? this.runs.get(action.contextKey) : undefined;
-      if (activeRun && action.approvalId && action.contextKey) {
-        // We don't have the tool name here easily, but we can at least append a status
-        activeRun.agentState = {
-          ...activeRun.agentState,
-          blocks: [
-            ...activeRun.agentState.blocks,
-            { kind: 'status', content: `飞书审批已通过并执行 (approval: ${action.approvalId})` }
-          ],
-          footer: null
-        };
-        if (activeRun.cardMessageId) {
-          void this.safePatchCard(activeRun.cardMessageId, {
-            title: 'Grok 正在处理',
-            status: 'info',
-            body: toCardBody(activeRun.agentState),
-            actions: [
-              {
-                text: '停止',
-                type: 'danger',
-                value: { action: 'stop_run', context_key: action.contextKey ?? '' }
-              }
-            ]
-          });
-        }
-      }
-    } catch (error) {
-      if (action.messageId) {
-        await this.safePatchCard(action.messageId, {
-          title: '飞书操作执行失败',
-          status: 'error',
-          body: toError(error).message
-        });
-      }
-      throw error;
     }
   }
 
@@ -765,7 +698,12 @@ export class RuntimeOrchestrator {
       );
       await this.notifyText(
         target,
-        `Grok 卡片发送失败，改用文本回报。\n${toError(error).message}`,
+        [
+          'Grok 卡片发送失败，改用文本回报。',
+          toError(error).message,
+          '',
+          formatCardUpdate(update)
+        ].join('\n'),
         'card send failure'
       );
       return undefined;
@@ -835,8 +773,6 @@ function commandActions(contextKey: string) {
     commandAction('状态', '/status', contextKey),
     commandAction('新会话', '/new', contextKey),
     commandAction('停止', '/stop', contextKey, 'danger'),
-    commandAction('MCP 工具', '/mcp tools', contextKey),
-    commandAction('权限检查', '/mcp scopes', contextKey),
     commandAction('诊断', '/doctor', contextKey)
   ];
 }

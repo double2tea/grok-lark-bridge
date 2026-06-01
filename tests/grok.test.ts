@@ -180,7 +180,7 @@ describe('parseAcpUpdate', () => {
           type: 'text',
           text: JSON.stringify({
             type: 'MCP',
-            tool_name: 'lark_msg_send_image',
+            tool_name: 'send_image',
             output: { OkayOutput: JSON.stringify({ message_id: 'om_1' }) }
           })
         }
@@ -580,6 +580,10 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/new') {
+    if (!Array.isArray(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+      return;
+    }
     send({ id: message.id, result: { sessionId: 'sess_test' } });
     return;
   }
@@ -670,6 +674,10 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
+    if (!Array.isArray(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+      return;
+    }
     activeSessionId = message.params.sessionId;
     send({ id: message.id, result: null });
     return;
@@ -726,10 +734,18 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
+    if (!Array.isArray(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+      return;
+    }
     send({ id: message.id, error: { code: -32000, message: 'unknown session' } });
     return;
   }
   if (message.method === 'session/new') {
+    if (!Array.isArray(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+      return;
+    }
     activeSessionId = 'sess_new';
     send({ id: message.id, result: { sessionId: activeSessionId } });
     return;

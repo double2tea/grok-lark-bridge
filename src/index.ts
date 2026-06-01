@@ -2,7 +2,6 @@
 import { loadConfig } from './config.js';
 import { FeishuApi } from './feishu-api.js';
 import { FeishuGateway } from './feishu-gateway.js';
-import { FeishuToolExecutor } from './feishu-tools.js';
 import { GrokAcpBackend } from './grok.js';
 import { acquireInstanceLock } from './instance-lock.js';
 import { RuntimeOrchestrator } from './orchestrator.js';
@@ -19,7 +18,6 @@ async function main(): Promise<void> {
 
     const sessions = new SessionService(store, config.access, config.defaultWorkspaceRoot);
     const api = new FeishuApi(config);
-    const tools = new FeishuToolExecutor(api, store, sessions);
     const grok = new GrokAcpBackend(
       config.grokBin,
       process.cwd(),
@@ -30,7 +28,7 @@ async function main(): Promise<void> {
         store.recordSessionEvent(event);
       }
     );
-    const orchestrator = new RuntimeOrchestrator(config, api, store, sessions, grok, tools);
+    const orchestrator = new RuntimeOrchestrator(config, api, store, sessions, grok);
     const gateway = new FeishuGateway(config, {
       onMessage: (message) => orchestrator.handleMessage(message),
       onCardAction: (action) => orchestrator.handleCardAction(action)

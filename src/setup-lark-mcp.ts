@@ -36,12 +36,9 @@ export function buildCombinedMcpConfig(
   projectRoot: string,
   config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
 ): Record<string, unknown> {
+  void projectRoot;
   return {
     mcpServers: {
-      'grok-lark-bridge': {
-        command: 'node',
-        args: [path.join(projectRoot, 'dist', 'mcp-server.js')]
-      },
       'lark-mcp': {
         command: 'npx',
         args: buildLarkMcpServerArgs(config)
@@ -71,8 +68,9 @@ function main(): void {
   process.stdout.write(`Generated Grok MCP config: ${outputPath}\n`);
   process.stdout.write(
     [
-      'Use that JSON to configure Grok with both MCP servers.',
+      'Use that JSON to configure Grok with the official Lark MCP server.',
       'The official lark-mcp server is configured with --oauth and --token-mode user_access_token.',
+      'Grok Lark Bridge no longer exposes a bridge-local MCP server.',
       ''
     ].join('\n')
   );

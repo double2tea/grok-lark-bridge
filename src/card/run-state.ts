@@ -313,17 +313,10 @@ export function toProcessLog(state: RunState, maxLength = 6000): string {
 function renderToolLines(tools: readonly ToolEntry[]): string[] {
   const lines: string[] = [];
   let imageEditCount = 0;
-  const sentImages: string[] = [];
 
   for (const tool of tools) {
     if (tool.status === 'done' && isImageEditTool(tool)) {
       imageEditCount += 1;
-      continue;
-    }
-
-    const sentImage = sentImageFile(tool);
-    if (tool.status === 'done' && sentImage) {
-      sentImages.push(sentImage);
       continue;
     }
 
@@ -332,12 +325,6 @@ function renderToolLines(tools: readonly ToolEntry[]): string[] {
 
   if (imageEditCount > 0) {
     lines.push(renderOperationLine('done', `图片编辑 ×${String(imageEditCount)}`));
-  }
-
-  if (sentImages.length > 0) {
-    lines.push(
-      renderOperationLine('done', `发送图片 ×${String(sentImages.length)}`, sentImages.join('、'))
-    );
   }
 
   return lines;
@@ -385,17 +372,6 @@ function displayTool(tool: ToolEntry): { name: string; summary: string } {
 
 function isImageEditTool(tool: ToolEntry): boolean {
   return tool.name === 'image_edit';
-}
-
-function sentImageFile(tool: ToolEntry): string | null {
-  const sentImage = prefixedValue(
-    tool.inputSummary,
-    'grok-lark-bridge__lark_msg_send_image: image: '
-  );
-  if (sentImage) {
-    return basename(sentImage);
-  }
-  return null;
 }
 
 function renderToolOutput(tool: ToolEntry): string {

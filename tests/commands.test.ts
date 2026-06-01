@@ -16,14 +16,14 @@ afterEach(() => {
 });
 
 describe('CommandRouter', () => {
-  it('lists enabled MCP tools and missing scopes', () => {
+  it('reports zero bridge-local MCP tools', () => {
     const { router, message, session, store } = makeRouter();
 
-    expect(router.handle({ ...message, text: '/mcp tools' }, session).text).toContain(
-      'lark_msg_send_image'
+    expect(router.handle({ ...message, text: '/mcp tools' }, session).text).toBe(
+      'No MCP tools enabled.'
     );
-    expect(router.handle({ ...message, text: '/mcp scopes' }, session).text).toContain(
-      'lark_doc_create'
+    expect(router.handle({ ...message, text: '/mcp scopes' }, session).text).toBe(
+      'No missing configured scopes.'
     );
     store.close();
   });
