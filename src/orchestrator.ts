@@ -934,8 +934,18 @@ class ThrottledCardUpdater {
     }
     this.pending = undefined;
     await this.inFlight;
+    const delay = Math.max(0, this.minIntervalMs - (Date.now() - this.lastPatchAt));
+    if (delay > 0) {
+      await sleep(delay);
+    }
     this.inFlight = this.patch(update);
     await this.inFlight;
     this.lastPatchAt = Date.now();
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

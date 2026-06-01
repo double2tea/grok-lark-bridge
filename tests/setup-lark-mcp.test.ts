@@ -2,6 +2,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   buildCombinedMcpConfig,
+  buildGrokMcpAddArgs,
   buildLarkMcpLoginArgs,
   buildLarkMcpServerArgs,
   generatedMcpConfigPath
@@ -37,6 +38,26 @@ describe('setup-lark-mcp', () => {
       '--oauth',
       '--token-mode',
       'user_access_token'
+    ]);
+  });
+
+  it('builds Grok CLI args that register official lark-mcp', () => {
+    expect(buildGrokMcpAddArgs(config)).toEqual([
+      'mcp',
+      'add',
+      'lark-mcp',
+      '--command',
+      'npx',
+      '--args=-y',
+      '--args=@larksuiteoapi/lark-mcp',
+      '--args=mcp',
+      '--args=-a',
+      '--args=cli_test',
+      '--args=-s',
+      '--args=secret_test',
+      '--args=--oauth',
+      '--args=--token-mode',
+      '--args=user_access_token'
     ]);
   });
 

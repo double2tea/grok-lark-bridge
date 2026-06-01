@@ -32,6 +32,19 @@ export function buildLarkMcpServerArgs(
   ];
 }
 
+export function buildGrokMcpAddArgs(
+  config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
+): readonly string[] {
+  return [
+    'mcp',
+    'add',
+    'lark-mcp',
+    '--command',
+    'npx',
+    ...buildLarkMcpServerArgs(config).map((arg) => `--args=${arg}`)
+  ];
+}
+
 export function buildCombinedMcpConfig(
   projectRoot: string,
   config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
@@ -68,7 +81,7 @@ function main(): void {
   process.stdout.write(`Generated Grok MCP config: ${outputPath}\n`);
   process.stdout.write(
     [
-      'Use that JSON to configure Grok with the official Lark MCP server.',
+      'Registering the official Lark MCP server in Grok config.',
       'The official lark-mcp server is configured with --oauth and --token-mode user_access_token.',
       'Grok Lark Bridge no longer exposes a bridge-local MCP server.',
       ''
@@ -76,7 +89,18 @@ function main(): void {
   );
 
   if (configOnly) {
-    process.stdout.write('Skipped official lark-mcp login because --config-only was provided.\n');
+    process.stdout.write(
+      'Skipped Grok MCP registration and official lark-mcp login because --config-only was provided.\n'
+    );
+    return;
+  }
+
+  const addResult = spawnSync(config.grokBin, buildGrokMcpAddArgs(config), { stdio: 'inherit' });
+  if (addResult.error) {
+    throw addResult.error;
+  }
+  if (addResult.status !== 0) {
+    process.exitCode = addResult.status ?? 1;
     return;
   }
 
