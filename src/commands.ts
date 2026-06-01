@@ -3,13 +3,23 @@ import { checkGrok, runDoctor } from './health.js';
 import { missingToolScopes, enabledTools } from './permissions.js';
 import { SessionService } from './session.js';
 import { StateStore } from './storage.js';
-import type { BridgeConfig, IncomingMessage, SessionRecord } from './types.js';
+import type {
+  BridgeConfig,
+  CardAction,
+  IncomingMessage,
+  SessionRecord,
+  TopicSeedRequest
+} from './types.js';
+
+const maxWorkspaceSwitchActions = 6;
 
 export interface CommandResult {
   readonly handled: boolean;
   readonly text?: string;
   readonly session?: SessionRecord;
   readonly stopRequested?: boolean;
+  readonly topicSeed?: TopicSeedRequest;
+  readonly actions?: readonly CardAction[];
 }
 
 export class CommandRouter {
@@ -21,6 +31,11 @@ export class CommandRouter {
   ) {}
 
   handle(message: IncomingMessage, session: SessionRecord): CommandResult {
+    const topicSeed = parseTopicSeedRequest(message.text);
+    if (topicSeed) {
+      return { handled: true, topicSeed };
+    }
+
     if (!message.text.startsWith('/')) {
       return { handled: false };
     }
@@ -35,6 +50,7 @@ export class CommandRouter {
             '',
             '/status',
             '/new',
+            '/topic <title> [路径 <path>]',
             '/stop',
             '/cd <path>',
             '/workspace list|save|use|remove',
@@ -63,6 +79,8 @@ export class CommandRouter {
           text: 'New Grok session created.',
           session: this.sessions.reset(session)
         };
+      case '/topic':
+        return { handled: true, topicSeed: parseSlashTopic(args) };
       case '/stop':
         return { handled: true, text: 'Stopping current run.', stopRequested: true };
       case '/cd':
@@ -97,12 +115,14 @@ export class CommandRouter {
     switch (action) {
       case 'list': {
         const rows = this.store.listWorkspaces();
+        const switchableRows = rows.filter((row) => row.cwd !== session.cwd);
+        const actions = switchableRows
+          .slice(0, maxWorkspaceSwitchActions)
+          .map((row) => workspaceUseAction(row.name, session.key));
         return {
           handled: true,
-          text:
-            rows.length === 0
-              ? 'No workspaces saved.'
-              : rows.map((row) => `${row.name}: ${row.cwd}`).join('\n')
+          text: formatWorkspaceList(session.cwd, rows, switchableRows.length),
+          actions
         };
       }
       case 'save': {
@@ -172,6 +192,75 @@ export class CommandRouter {
     }
     throw new Error('/mcp requires tools|scopes');
   }
+}
+
+function workspaceUseAction(name: string, contextKey: string): CardAction {
+  return {
+    text: `切换 ${name}`,
+    type: 'primary',
+    value: { action: 'run_command', command: `/workspace use ${name}`, context_key: contextKey }
+  };
+}
+
+function formatWorkspaceList(
+  currentCwd: string,
+  rows: readonly { readonly name: string; readonly cwd: string }[],
+  switchableCount: number
+): string {
+  const lines = ['**当前工作目录**', `\`${currentCwd}\``];
+  if (rows.length === 0) {
+    return [
+      ...lines,
+      '',
+      '暂无已保存工作目录。',
+      '使用 `/workspace save <name>` 保存当前目录。'
+    ].join('\n');
+  }
+  lines.push('', '**已保存工作目录**', ...rows.flatMap(formatWorkspaceRow(currentCwd)));
+  if (switchableCount > 0) {
+    lines.push('', '点击下方按钮切换到其它工作目录。');
+  }
+  if (switchableCount > maxWorkspaceSwitchActions) {
+    lines.push(`仅显示前 ${String(maxWorkspaceSwitchActions)} 个切换按钮。`);
+  }
+  return lines.join('\n');
+}
+
+function formatWorkspaceRow(
+  currentCwd: string
+): (row: { readonly name: string; readonly cwd: string }) => readonly string[] {
+  return (row) => [
+    row.cwd === currentCwd ? `**${row.name}**（当前）` : `**${row.name}**`,
+    `\`${row.cwd}\``
+  ];
+}
+
+function parseTopicSeedRequest(text: string): TopicSeedRequest | undefined {
+  const trimmed = text.trim();
+  const match = /^(?:新话题|新任务)\s*[:：]?\s*(?<body>.*)$/u.exec(trimmed);
+  if (!match?.groups) {
+    return undefined;
+  }
+  return parseTopicBody(match.groups.body);
+}
+
+function parseSlashTopic(args: readonly string[]): TopicSeedRequest {
+  return parseTopicBody(args.join(' '));
+}
+
+function parseTopicBody(body: string): TopicSeedRequest {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    throw new Error('/topic requires a title');
+  }
+  const pathMatch =
+    /^(?<title>.+?)(?:[，,；;]\s*|\s+)(?:路径|工作区|cwd)\s*[:：]?\s+(?<cwd>.+)$/iu.exec(trimmed);
+  const title = (pathMatch?.groups?.title ?? trimmed).trim();
+  if (!title) {
+    throw new Error('Topic title is required');
+  }
+  const cwdInput = pathMatch?.groups?.cwd.trim();
+  return cwdInput ? { title, cwdInput } : { title };
 }
 
 function formatDoctorCheck(check: ReturnType<typeof runDoctor>[number]): string {

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { FeishuApiPort } from '../src/feishu-api.js';
+import type { FeishuApiPort, MessageReplyOptions } from '../src/feishu-api.js';
 import { FeishuToolExecutor } from '../src/feishu-tools.js';
 import { findTool } from '../src/permissions.js';
 import { SessionService } from '../src/session.js';
@@ -21,35 +21,56 @@ class FakeFeishuApi implements FeishuApiPort {
   readonly cards: FeishuCardUpdate[] = [];
   readonly texts: string[] = [];
   readonly media: string[] = [];
+  readonly cardTargets: (MessageReplyOptions | undefined)[] = [];
+  readonly mediaTargets: (MessageReplyOptions | undefined)[] = [];
 
   sendText(_chatId: string, text: string): Promise<string | undefined> {
     this.texts.push(text);
     return Promise.resolve('msg_text');
   }
 
-  sendImage(_chatId: string, sourcePath: string): Promise<string | undefined> {
+  sendImage(
+    _chatId: string,
+    sourcePath: string,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined> {
     this.media.push(`image:${sourcePath}`);
+    this.mediaTargets.push(options);
     return Promise.resolve('msg_image');
   }
 
-  sendFile(_chatId: string, sourcePath: string, fileName?: string): Promise<string | undefined> {
+  sendFile(
+    _chatId: string,
+    sourcePath: string,
+    fileName?: string,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined> {
     this.media.push(`file:${sourcePath}:${fileName ?? ''}`);
+    this.mediaTargets.push(options);
     return Promise.resolve('msg_file');
   }
 
-  sendAudio(_chatId: string, sourcePath: string, duration?: number): Promise<string | undefined> {
+  sendAudio(
+    _chatId: string,
+    sourcePath: string,
+    duration?: number,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined> {
     this.media.push(`audio:${sourcePath}:${String(duration ?? '')}`);
+    this.mediaTargets.push(options);
     return Promise.resolve('msg_audio');
   }
 
   sendVideo(
     _chatId: string,
     sourcePath: string,
-    input?: { readonly duration?: number; readonly coverImageKey?: string }
+    input?: { readonly duration?: number; readonly coverImageKey?: string },
+    options?: MessageReplyOptions
   ): Promise<string | undefined> {
     this.media.push(
       `video:${sourcePath}:${String(input?.duration ?? '')}:${input?.coverImageKey ?? ''}`
     );
+    this.mediaTargets.push(options);
     return Promise.resolve('msg_video');
   }
 
@@ -57,8 +78,13 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve('/tmp/resource');
   }
 
-  sendCard(_chatId: string, update: FeishuCardUpdate): Promise<string | undefined> {
+  sendCard(
+    _chatId: string,
+    update: FeishuCardUpdate,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined> {
     this.cards.push(update);
+    this.cardTargets.push(options);
     return Promise.resolve('msg_card');
   }
 
@@ -140,6 +166,51 @@ describe('FeishuToolExecutor', () => {
     store.close();
   });
 
+  it('sends topic approval cards as replies to the topic root', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
+    dirs.push(dir);
+    const store = new StateStore(dir);
+    store.upsertSession({
+      key: 'chat_1:msg_root',
+      chatId: 'chat_1',
+      rootId: 'msg_root',
+      threadId: null,
+      grokSessionId: 'grok_1',
+      nativeSessionId: null,
+      cwd: '/tmp',
+      approvalPolicy: 'confirm_write',
+      runStatus: 'idle',
+      activeMessageId: null
+    });
+
+    const api = new FakeFeishuApi();
+    const sessions = new SessionService(
+      store,
+      {
+        adminOpenIds: [],
+        allowedChatIds: [],
+        defaultApprovalPolicy: 'confirm_write',
+        approvalOverrides: [],
+        enableAdvancedOpenApiTool: false
+      },
+      '/tmp'
+    );
+    const executor = new FeishuToolExecutor(api, store, sessions);
+
+    await executor.call(findRequiredTool('lark_doc_create'), {
+      context_key: 'chat_1:msg_root',
+      requested_by_open_id: 'ou_1',
+      title: 'Topic doc'
+    });
+
+    await waitForCard(api);
+    expect(api.cardTargets[0]).toEqual({
+      replyToMessageId: 'msg_root',
+      replyInThread: true
+    });
+    store.close();
+  });
+
   it('sends media tools through the Feishu media API port', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
     dirs.push(dir);
@@ -182,6 +253,55 @@ describe('FeishuToolExecutor', () => {
 
     expect(JSON.parse(result.text)).toEqual({ message_id: 'msg_video' });
     expect(api.media).toEqual(['video:/tmp/demo.mp4:1200:img_1']);
+    expect(api.mediaTargets).toEqual([undefined]);
+    store.close();
+  });
+
+  it('sends topic media tools as replies when targeting the same chat', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
+    dirs.push(dir);
+    const store = new StateStore(dir);
+    store.upsertSession({
+      key: 'chat_1:msg_root',
+      chatId: 'chat_1',
+      rootId: 'msg_root',
+      threadId: null,
+      grokSessionId: 'grok_1',
+      nativeSessionId: null,
+      cwd: '/tmp',
+      approvalPolicy: 'auto',
+      runStatus: 'idle',
+      activeMessageId: null
+    });
+
+    const api = new FakeFeishuApi();
+    const sessions = new SessionService(
+      store,
+      {
+        adminOpenIds: [],
+        allowedChatIds: [],
+        defaultApprovalPolicy: 'auto',
+        approvalOverrides: [],
+        enableAdvancedOpenApiTool: false
+      },
+      '/tmp'
+    );
+    const executor = new FeishuToolExecutor(api, store, sessions);
+
+    await executor.call(findRequiredTool('lark_msg_send_image'), {
+      context_key: 'chat_1:msg_root',
+      requested_by_open_id: 'ou_1',
+      chat_id: 'chat_1',
+      file_path: '/tmp/demo.png'
+    });
+
+    expect(api.media).toEqual(['image:/tmp/demo.png']);
+    expect(api.mediaTargets).toEqual([
+      {
+        replyToMessageId: 'msg_root',
+        replyInThread: true
+      }
+    ]);
     store.close();
   });
 });

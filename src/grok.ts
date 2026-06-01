@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { Readable } from 'node:stream';
-import type { GrokBackend, GrokEvent, GrokRunInput } from './types.js';
+import type { GrokBackend, GrokEvent, GrokRunInput, SessionEventAction } from './types.js';
 import { isRecord, readString, sanitizeForCard, stripAnsi } from './utils.js';
 
 type ToolEvent = Extract<GrokEvent, { readonly type: 'tool' }>;
@@ -39,6 +39,18 @@ interface AcpSession {
   readonly cwd: string;
 }
 
+interface AcpSessionResolution {
+  readonly session: AcpSession;
+  readonly source:
+    | 'reused'
+    | 'loaded'
+    | 'created'
+    | 'created_without_load_support'
+    | 'created_after_load_failed';
+  readonly previousNativeSessionId?: string;
+  readonly loadError?: string;
+}
+
 interface NativeSessionBinding {
   readonly grokSessionId: string;
   readonly nativeSessionId: string;
@@ -46,6 +58,16 @@ interface NativeSessionBinding {
 }
 
 type NativeSessionBinder = (binding: NativeSessionBinding) => void;
+
+interface NativeSessionEvent {
+  readonly contextKey: string;
+  readonly grokSessionId: string;
+  readonly nativeSessionId: string | null;
+  readonly action: SessionEventAction;
+  readonly detail: string | null;
+}
+
+type NativeSessionEventRecorder = (event: NativeSessionEvent) => void;
 
 interface AcpMcpServer {
   readonly name: string;
@@ -84,11 +106,13 @@ export class GrokAcpBackend implements GrokBackend {
   private readonly sessions = new Map<string, AcpSession>();
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly terminals = new Map<string, AcpTerminal>();
+  private supportsLoadSession = false;
 
   constructor(
     private readonly grokBin: string,
     private readonly projectRoot = process.cwd(),
-    private readonly bindNativeSession?: NativeSessionBinder
+    private readonly bindNativeSession?: NativeSessionBinder,
+    private readonly recordNativeSessionEvent?: NativeSessionEventRecorder
   ) {}
 
   close(): void {
@@ -116,15 +140,13 @@ export class GrokAcpBackend implements GrokBackend {
       await onEvent({ type: 'status', text: '正在连接 Grok ACP。' });
       await this.ensureInitialized();
       await onEvent({ type: 'status', text: 'Grok ACP 已就绪。' });
-      const cachedSession = this.sessions.get(input.sessionId);
-      session = await this.getOrCreateSession(input);
-      await onEvent({
-        type: 'status',
-        text:
-          cachedSession && cachedSession.cwd === input.cwd
-            ? `复用 Grok 原生会话 ${shortId(session.acpSessionId)}。`
-            : `已绑定 Grok 原生会话 ${shortId(session.acpSessionId)}。`
-      });
+      const resolved = await this.getOrCreateSession(input);
+      session = resolved.session;
+      this.recordSessionResolution(input, resolved);
+      const sessionStatus = formatAcpSessionStatus(resolved);
+      if (sessionStatus) {
+        await onEvent({ type: 'status', text: sessionStatus });
+      }
       const activeSession = session;
       const active: ActiveRun = { onEvent, tasks: [] };
       this.activeRuns.set(activeSession.acpSessionId, active);
@@ -225,15 +247,48 @@ export class GrokAcpBackend implements GrokBackend {
         version: '0.1.0'
       }
     });
+    this.supportsLoadSession = supportsAcpLoadSession(init);
     const methodId = chooseAuthMethod(init);
     await this.request('authenticate', { methodId, _meta: { headless: true } });
   }
 
-  private async getOrCreateSession(input: GrokRunInput): Promise<AcpSession> {
+  private async getOrCreateSession(input: GrokRunInput): Promise<AcpSessionResolution> {
     const existing = this.sessions.get(input.sessionId);
     if (existing && existing.cwd === input.cwd) {
-      return existing;
+      return { session: existing, source: 'reused' };
     }
+    if (input.nativeSessionId && this.supportsLoadSession) {
+      try {
+        await this.request(
+          'session/load',
+          {
+            sessionId: input.nativeSessionId,
+            cwd: input.cwd,
+            mcpServers: [this.bridgeMcpServer()]
+          },
+          180000
+        );
+        const loaded = { acpSessionId: input.nativeSessionId, cwd: input.cwd };
+        this.sessions.set(input.sessionId, loaded);
+        return { session: loaded, source: 'loaded' };
+      } catch (error) {
+        const created = await this.createSession(input);
+        return {
+          session: created,
+          source: 'created_after_load_failed',
+          previousNativeSessionId: input.nativeSessionId,
+          loadError: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+    const created = await this.createSession(input);
+    return {
+      session: created,
+      source: input.nativeSessionId ? 'created_without_load_support' : 'created'
+    };
+  }
+
+  private async createSession(input: GrokRunInput): Promise<AcpSession> {
     const result = await this.request('session/new', {
       cwd: input.cwd,
       mcpServers: [this.bridgeMcpServer()]
@@ -250,6 +305,16 @@ export class GrokAcpBackend implements GrokBackend {
       cwd: input.cwd
     });
     return created;
+  }
+
+  private recordSessionResolution(input: GrokRunInput, resolution: AcpSessionResolution): void {
+    this.recordNativeSessionEvent?.({
+      contextKey: input.contextKey,
+      grokSessionId: input.sessionId,
+      nativeSessionId: resolution.session.acpSessionId,
+      action: sessionEventAction(resolution.source),
+      detail: sessionEventDetail(resolution)
+    });
   }
 
   private request(
@@ -1154,8 +1219,57 @@ function readApprovalId(text: string): string | undefined {
   return /Approval requested:\s*([A-Za-z0-9_-]+)/u.exec(text)?.[1];
 }
 
-function shortId(id: string): string {
-  return id.length <= 12 ? id : `${id.slice(0, 8)}...${id.slice(-4)}`;
+function formatAcpSessionStatus(resolution: AcpSessionResolution): string | undefined {
+  switch (resolution.source) {
+    case 'reused':
+    case 'loaded':
+    case 'created':
+    case 'created_without_load_support':
+      return undefined;
+    case 'created_after_load_failed':
+      return [
+        '上次 Grok 会话无法恢复，已建立新的 Grok 会话。',
+        resolution.loadError ? `原因：${resolution.loadError}` : undefined
+      ]
+        .filter((line): line is string => line !== undefined && line.length > 0)
+        .join('\n');
+  }
+}
+
+function sessionEventAction(source: AcpSessionResolution['source']): SessionEventAction {
+  switch (source) {
+    case 'reused':
+      return 'reuse';
+    case 'loaded':
+      return 'load';
+    case 'created':
+      return 'new';
+    case 'created_without_load_support':
+      return 'new_without_load_support';
+    case 'created_after_load_failed':
+      return 'new_after_load_failed';
+  }
+}
+
+function sessionEventDetail(resolution: AcpSessionResolution): string | null {
+  switch (resolution.source) {
+    case 'created_after_load_failed':
+      return [
+        `previous=${resolution.previousNativeSessionId ?? ''}`,
+        resolution.loadError ? `error=${resolution.loadError}` : undefined
+      ]
+        .filter((line): line is string => line !== undefined && line.length > 0)
+        .join(' ');
+    case 'created_without_load_support':
+      return 'loadSession unsupported';
+    default:
+      return null;
+  }
+}
+
+function supportsAcpLoadSession(init: Record<string, unknown>): boolean {
+  const capabilities = init.agentCapabilities;
+  return isRecord(capabilities) && capabilities.loadSession === true;
 }
 
 function chooseAuthMethod(init: Record<string, unknown>): string {

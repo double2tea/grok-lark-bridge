@@ -221,7 +221,7 @@ export function finalizeIfRunning(state: RunState): RunState {
 
 export function toCardBody(state: RunState, maxLength = 8000): string {
   const lines: string[] = [];
-  const toolLines: string[] = [];
+  const tools: ToolEntry[] = [];
   const statusLines: string[] = [];
 
   for (const block of state.blocks) {
@@ -232,14 +232,15 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
         statusLines.push(block.content);
       }
     } else if (!isInternalToolDiscovery(block.tool)) {
-      toolLines.push(renderToolLine(block.tool));
+      tools.push(block.tool);
     }
   }
 
+  const toolLines = renderToolLines(tools);
   if (toolLines.length > 0) {
     if (lines.length > 0) lines.push('');
     lines.push('执行摘要');
-    lines.push(...compactLines(toolLines, 8, '还有工具调用已完成'));
+    lines.push(...compactLines(toolLines, 8, '还有执行步骤'));
   }
 
   if (statusLines.length > 0) {
@@ -270,12 +271,131 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
   return body || '（无输出）';
 }
 
+export function toProcessLog(state: RunState, maxLength = 6000): string {
+  const tools: ToolEntry[] = [];
+  const statusLines: string[] = [];
+
+  for (const block of state.blocks) {
+    if (block.kind === 'status') {
+      if (!isLowSignalStatus(block.content)) {
+        statusLines.push(block.content);
+      }
+    } else if (block.kind === 'tool' && !isInternalToolDiscovery(block.tool)) {
+      tools.push(block.tool);
+    }
+  }
+
+  const lines = [
+    ...compactLines(renderToolLines(tools), 10, '还有执行步骤'),
+    ...compactLines(
+      statusLines.map((line) => `• ${line}`),
+      4,
+      '还有状态更新'
+    )
+  ];
+  let body = lines.join('\n\n');
+
+  if (state.footer === 'thinking') {
+    body += body ? '\n\n_思考中..._' : '_思考中..._';
+  } else if (state.footer === 'tool_running') {
+    body += body ? '\n\n_正在执行工具..._' : '_正在执行工具..._';
+  } else if (state.footer === 'waiting_approval') {
+    body += body ? '\n\n_等待飞书审批..._' : '_等待飞书审批..._';
+  }
+
+  if (body.length > maxLength) {
+    body = body.slice(0, maxLength - 3) + '...';
+  }
+
+  return body;
+}
+
+function renderToolLines(tools: readonly ToolEntry[]): string[] {
+  const lines: string[] = [];
+  let imageEditCount = 0;
+  const sentImages: string[] = [];
+
+  for (const tool of tools) {
+    if (tool.status === 'done' && isImageEditTool(tool)) {
+      imageEditCount += 1;
+      continue;
+    }
+
+    const sentImage = sentImageFile(tool);
+    if (tool.status === 'done' && sentImage) {
+      sentImages.push(sentImage);
+      continue;
+    }
+
+    lines.push(renderToolLine(tool));
+  }
+
+  if (imageEditCount > 0) {
+    lines.push(renderOperationLine('done', `图片编辑 ×${String(imageEditCount)}`));
+  }
+
+  if (sentImages.length > 0) {
+    lines.push(
+      renderOperationLine('done', `发送图片 ×${String(sentImages.length)}`, sentImages.join('、'))
+    );
+  }
+
+  return lines;
+}
+
 function renderToolLine(tool: ToolEntry): string {
-  const statusText = toolStatusText(tool.status);
-  const summary = tool.inputSummary ? `：${tool.inputSummary}` : '';
+  const display = displayTool(tool);
   const duration = tool.durationMs !== undefined ? ` (${formatDuration(tool.durationMs)})` : '';
   const output = renderToolOutput(tool);
-  return `${statusText} ${tool.name}${summary}${duration}${output}`;
+  return `${renderOperationLine(tool.status, `${display.name}${duration}`, display.summary)}${output}`;
+}
+
+function renderOperationLine(status: ToolStatus, title: string, detail = ''): string {
+  const header = `${statusTag(status)} **${title}**`;
+  if (!detail) {
+    return header;
+  }
+  return `${header}\n└ ${inlineCode(detail)}`;
+}
+
+function displayTool(tool: ToolEntry): { name: string; summary: string } {
+  if (tool.name === 'read_file') {
+    const filePath = stripPrefix(tool.inputSummary, 'file: ');
+    return {
+      name: filePath.includes('/inbound-media/') ? '读取附件' : '读取文件',
+      summary: basename(filePath)
+    };
+  }
+
+  const webSearchQuery = prefixedValue(tool.inputSummary, 'grok-search__web_search: query: ');
+  if (webSearchQuery) {
+    return { name: '网页搜索', summary: truncateText(webSearchQuery, 48) };
+  }
+
+  if (tool.name === 'image_edit') {
+    return { name: '图片编辑', summary: '' };
+  }
+
+  if (tool.name === 'image_gen') {
+    return { name: '生成图片', summary: '' };
+  }
+
+  return { name: tool.name, summary: truncateText(tool.inputSummary, 72) };
+}
+
+function isImageEditTool(tool: ToolEntry): boolean {
+  return tool.name === 'image_edit';
+}
+
+function sentImageFile(tool: ToolEntry): string | null {
+  const sentImage = prefixedValue(
+    tool.inputSummary,
+    'grok-lark-bridge__lark_msg_send_image: image: '
+  );
+  if (sentImage) {
+    return basename(sentImage);
+  }
+  return null;
 }
 
 function renderToolOutput(tool: ToolEntry): string {
@@ -285,19 +405,32 @@ function renderToolOutput(tool: ToolEntry): string {
   if (tool.status === 'done') {
     return '';
   }
-  return `\n  ${tool.output}`;
+  return `\n└ ${inlineCode(truncateText(tool.output, 120))}`;
 }
 
 function toolStatusText(status: ToolStatus): string {
   switch (status) {
     case 'done':
-      return '✓';
+      return '完成';
     case 'error':
-      return '✗';
+      return '失败';
     case 'pending_approval':
       return '待审批';
     case 'running':
       return '进行中';
+  }
+}
+
+function statusTag(status: ToolStatus): string {
+  switch (status) {
+    case 'done':
+      return textTag('green', toolStatusText(status));
+    case 'error':
+      return textTag('red', toolStatusText(status));
+    case 'pending_approval':
+      return textTag('orange', toolStatusText(status));
+    case 'running':
+      return textTag('blue', toolStatusText(status));
   }
 }
 
@@ -306,6 +439,37 @@ function compactLines(lines: readonly string[], limit: number, suffix: string): 
     return [...lines];
   }
   return [...lines.slice(0, limit), `…${suffix} ${String(lines.length - limit)} 项`];
+}
+
+function prefixedValue(value: string, prefix: string): string | null {
+  if (!value.startsWith(prefix)) {
+    return null;
+  }
+  return value.slice(prefix.length);
+}
+
+function stripPrefix(value: string, prefix: string): string {
+  return prefixedValue(value, prefix) ?? value;
+}
+
+function basename(path: string): string {
+  const parts = path.split(/[\\/]/);
+  return parts.at(-1) ?? path;
+}
+
+function truncateText(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+  return `${value.slice(0, maxLength - 1)}…`;
+}
+
+function inlineCode(value: string): string {
+  return `\`${value.replace(/`/gu, "'")}\``;
+}
+
+function textTag(color: 'green' | 'red' | 'orange' | 'blue', text: string): string {
+  return `<text_tag color='${color}'>${text}</text_tag>`;
 }
 
 function isInternalToolDiscovery(tool: ToolEntry): boolean {

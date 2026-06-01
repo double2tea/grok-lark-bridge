@@ -105,4 +105,81 @@ describe('FeishuApi', () => {
       }
     ]);
   });
+
+  it('sends final cards with a collapsed process log panel', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      processLog: "<text_tag color='green'>完成</text_tag> **网页搜索**",
+      body: '文本输出见下方消息。'
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const body = asRecord(card.body);
+    const elements = body.elements;
+
+    expect(card.schema).toBe('2.0');
+    expect(Array.isArray(elements)).toBe(true);
+    const panel = asRecord((elements as readonly unknown[])[0]);
+    const header = asRecord(panel.header);
+    const title = asRecord(header.title);
+
+    expect(panel.tag).toBe('collapsible_panel');
+    expect(title.content).toBe('本轮处理');
+    expect(asRecord((elements as readonly unknown[])[1]).content).toBe('文本输出见下方消息。');
+  });
+
+  it('sends card replies in the source thread', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard(
+      'chat_1',
+      {
+        title: 'Grok 已收到',
+        status: 'info',
+        body: '正在生成回复。'
+      },
+      { replyToMessageId: 'om_root', replyInThread: true }
+    );
+
+    const data = asRecord(api.requests[0]?.data);
+
+    expect(api.requests[0]?.method).toBe('POST');
+    expect(api.requests[0]?.url).toBe('/open-apis/im/v1/messages/om_root/reply');
+    expect(data.msg_type).toBe('interactive');
+    expect(data.reply_in_thread).toBe(true);
+    expect(typeof data.content).toBe('string');
+  });
+
+  it('sends uploaded media as replies when a reply target is provided', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendImage('chat_1', '/tmp/a.png', {
+      replyToMessageId: 'om_root',
+      replyInThread: true
+    });
+
+    expect(api.requests).toEqual([
+      { method: 'UPLOAD_IMAGE', url: '/tmp/a.png' },
+      {
+        method: 'POST',
+        url: '/open-apis/im/v1/messages/om_root/reply',
+        data: {
+          msg_type: 'image',
+          content: JSON.stringify({ image_key: 'img_1' }),
+          reply_in_thread: true
+        }
+      }
+    ]);
+  });
 });
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('expected record');
+  }
+  return value as Record<string, unknown>;
+}

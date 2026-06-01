@@ -108,6 +108,7 @@ Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `request
 - `/help`
 - `/status`
 - `/new`
+- `/topic <title> [路径 <path>]`
 - `/stop`
 - `/cd <path>`
 - `/workspace list|save|use|remove`
@@ -115,6 +116,14 @@ Grok 每次通过桥接运行时会收到当前飞书 `context_key` 和 `request
 - `/mcp tools`
 - `/mcp scopes`
 - `/doctor`
+
+也可以直接发送自然语言创建新话题种子消息：
+
+```text
+新话题：重构 storage，路径 /Users/chacha/Documents/Grok Lark Bridge
+```
+
+机器人会发送一条种子消息。回复这条种子消息即可进入新的飞书话题，并自动使用独立 Grok 会话；直接在底部输入框发送仍会回到原会话。
 
 ## Media Messages
 

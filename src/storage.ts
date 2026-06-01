@@ -6,6 +6,8 @@ import type {
   ApprovalStatus,
   PendingApproval,
   RunStatus,
+  SessionEventAction,
+  SessionEventRecord,
   SessionRecord
 } from './types.js';
 import { randomId } from './utils.js';
@@ -40,6 +42,16 @@ interface PendingApprovalRow {
 interface WorkspaceRow {
   readonly name: string;
   readonly cwd: string;
+}
+
+interface SessionEventRow {
+  readonly id: number;
+  readonly context_key: string;
+  readonly grok_session_id: string;
+  readonly native_session_id: string | null;
+  readonly action: SessionEventAction;
+  readonly detail: string | null;
+  readonly created_at: number;
 }
 
 export class StateStore {
@@ -156,6 +168,45 @@ export class StateStore {
         'update sessions set native_session_id = ?, updated_at = ? where grok_session_id = ?'
       )
       .run(nativeSessionId, Date.now(), grokSessionId);
+  }
+
+  recordSessionEvent(input: {
+    readonly contextKey: string;
+    readonly grokSessionId: string;
+    readonly nativeSessionId: string | null;
+    readonly action: SessionEventAction;
+    readonly detail: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `insert into session_events(
+          context_key, grok_session_id, native_session_id, action, detail, created_at
+        ) values (?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        input.contextKey,
+        input.grokSessionId,
+        input.nativeSessionId,
+        input.action,
+        input.detail,
+        Date.now()
+      );
+  }
+
+  listRecentSessionEvents(limit: number): readonly SessionEventRecord[] {
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error('Session event limit must be a positive integer');
+    }
+    const rows = this.db
+      .prepare('select * from session_events order by created_at desc, id desc limit ?')
+      .all(limit) as SessionEventRow[];
+    return rows.map(mapSessionEvent);
+  }
+
+  pruneSessionEvents(olderThanMs: number): void {
+    this.db
+      .prepare('delete from session_events where created_at < ?')
+      .run(Date.now() - olderThanMs);
   }
 
   setSessionRun(key: string, runStatus: RunStatus, activeMessageId: string | null): void {
@@ -303,6 +354,16 @@ export class StateStore {
         result_text text,
         resolved_at integer
       );
+
+      create table if not exists session_events (
+        id integer primary key autoincrement,
+        context_key text not null,
+        grok_session_id text not null,
+        native_session_id text,
+        action text not null,
+        detail text,
+        created_at integer not null
+      );
     `);
     this.addColumnIfMissing('sessions', 'root_id', 'text');
     this.addColumnIfMissing('sessions', 'native_session_id', 'text');
@@ -319,6 +380,18 @@ export class StateStore {
       this.db.exec(`alter table ${table} add column ${column} ${definition}`);
     }
   }
+}
+
+function mapSessionEvent(row: SessionEventRow): SessionEventRecord {
+  return {
+    id: row.id,
+    contextKey: row.context_key,
+    grokSessionId: row.grok_session_id,
+    nativeSessionId: row.native_session_id,
+    action: row.action,
+    detail: row.detail,
+    createdAt: row.created_at
+  };
 }
 
 function mapSession(row: SessionRow): SessionRecord {

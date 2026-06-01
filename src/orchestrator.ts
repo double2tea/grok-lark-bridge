@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CommandRouter } from './commands.js';
-import type { FeishuApiPort } from './feishu-api.js';
+import type { FeishuApiPort, MessageReplyOptions } from './feishu-api.js';
 import { FeishuToolExecutor } from './feishu-tools.js';
 import { GrokRunAbortedError } from './grok.js';
 import type {
@@ -11,7 +11,8 @@ import type {
   GrokEvent,
   IncomingCardAction,
   IncomingMessage,
-  SessionRecord
+  SessionRecord,
+  TopicSeedRequest
 } from './types.js';
 import { SessionService } from './session.js';
 import { StateStore } from './storage.js';
@@ -21,6 +22,7 @@ import {
   initialState as initialAgentState,
   reduce as reduceAgentState,
   toCardBody,
+  toProcessLog,
   markInterrupted,
   finalizeIfRunning,
   markIdleTimeout
@@ -42,15 +44,14 @@ const grokIdleTimeoutMs = 10 * 60 * 1000;
 const grokFirstOutputTimeoutMs = 30 * 1000;
 const maxDiagnostics = 80;
 const cardUpdateMinIntervalMs = 1500;
-const textUpdateMinIntervalMs = 2000;
 
 interface OutputTextState {
-  messageId: string | undefined;
   text: string;
-  deliveredText: string;
-  announced: boolean;
-  editFailed: boolean;
-  chain: Promise<void>;
+}
+
+interface MessageDeliveryTarget {
+  readonly chatId: string;
+  readonly reply?: MessageReplyOptions;
 }
 
 export class RuntimeOrchestrator {
@@ -207,11 +208,12 @@ export class RuntimeOrchestrator {
   }
 
   private async executeCommand(message: IncomingMessage, session: SessionRecord): Promise<boolean> {
+    const deliveryTarget = toDeliveryTarget(message);
     let command: ReturnType<CommandRouter['handle']>;
     try {
       command = this.commands.handle(message, session);
     } catch (error) {
-      await this.sendCardOrNotify(session.chatId, {
+      await this.sendCardOrNotify(deliveryTarget, {
         title: '命令执行失败',
         status: 'error',
         body: toError(error).message,
@@ -226,31 +228,86 @@ export class RuntimeOrchestrator {
       this.stopRun(session.key);
     }
     const updatedSession = command.session ?? session;
+    if (command.topicSeed) {
+      try {
+        await this.createTopicSeed(message, updatedSession, command.topicSeed);
+      } catch (error) {
+        await this.sendCardOrNotify(deliveryTarget, {
+          title: '新话题创建失败',
+          status: 'error',
+          body: toError(error).message,
+          actions: commandActions(updatedSession.key)
+        });
+      }
+      return true;
+    }
     if (message.text.trim() === '/help') {
-      await this.sendCardOrNotify(updatedSession.chatId, buildHelpCard(updatedSession.key));
+      await this.sendCardOrNotify(deliveryTarget, buildHelpCard(updatedSession.key));
       return true;
     }
     if (command.text) {
-      await this.sendCardOrNotify(updatedSession.chatId, {
+      await this.sendCardOrNotify(deliveryTarget, {
         title: commandTitle(message.text),
         status: command.stopRequested ? 'warning' : 'info',
         body: command.text,
-        actions: commandActions(updatedSession.key)
+        actions: command.actions ?? commandActions(updatedSession.key)
       });
     }
     return true;
   }
 
+  private async createTopicSeed(
+    message: IncomingMessage,
+    session: SessionRecord,
+    seed: TopicSeedRequest
+  ): Promise<void> {
+    const cwd = seed.cwdInput ? path.resolve(session.cwd, seed.cwdInput) : session.cwd;
+    assertDirectory(cwd, 'Topic workspace');
+    const seedText = [
+      `新话题：${truncate(seed.title, 120)}`,
+      `工作目录：${cwd}`,
+      '',
+      '请回复这条消息继续；直接在底部输入会回到原会话。'
+    ].join('\n');
+    const seedMessageId = await this.api.sendText(session.chatId, seedText);
+    if (!seedMessageId) {
+      throw new Error('Feishu did not return message_id for topic seed');
+    }
+    const topicSession = this.sessions.createTopicSeedSession({
+      chatId: session.chatId,
+      rootMessageId: seedMessageId,
+      cwd,
+      approvalPolicy: session.approvalPolicy
+    });
+    this.record(
+      'info',
+      `Topic seed created chat=${message.chatId} seed=${seedMessageId} context=${topicSession.key} cwd=${cwd}`
+    );
+  }
+
   private async processMessage(message: IncomingMessage): Promise<void> {
     const session = this.sessions.getOrCreateFromMessage(message);
+    const deliveryTarget = toDeliveryTarget(message);
+    try {
+      assertDirectory(session.cwd, 'Workspace');
+    } catch (error) {
+      await this.sendCardOrNotify(deliveryTarget, {
+        title: '工作目录无效',
+        status: 'error',
+        body: toError(error).message,
+        actions: commandActions(session.key)
+      });
+      return;
+    }
     const previousRun = this.runs.get(session.key);
     const reusePreviousCard = previousRun?.cardMessageId !== undefined;
 
     let cardMessageId = previousRun?.cardMessageId ?? null;
     let isNewCardForThisRun = cardMessageId === null;
+    let cardUnavailable = false;
     if (!cardMessageId) {
       cardMessageId =
-        (await this.sendCardOrNotify(session.chatId, {
+        (await this.sendCardOrNotify(deliveryTarget, {
           title: 'Grok 已收到',
           status: 'info',
           body: '正在生成回复。',
@@ -262,6 +319,7 @@ export class RuntimeOrchestrator {
             }
           ]
         })) ?? null;
+      cardUnavailable = cardMessageId === null;
     }
 
     this.store.setSessionRun(session.key, 'running', cardMessageId ?? null);
@@ -301,7 +359,7 @@ export class RuntimeOrchestrator {
             Math.floor(grokIdleTimeoutMs / 60000)
           );
         }
-        void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+        void this.reportRunUpdate(deliveryTarget, cardMessageId ?? undefined, {
           title: 'Grok 执行超时',
           status: 'error',
           body: toCardBody(
@@ -335,28 +393,19 @@ export class RuntimeOrchestrator {
           liveCard.request(update);
           return;
         }
-        void this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, update);
+        void this.reportRunUpdate(deliveryTarget, cardMessageId ?? undefined, update);
       });
     }, grokFirstOutputTimeoutMs);
 
     const outputText: OutputTextState = {
-      messageId: undefined,
-      text: '',
-      deliveredText: '',
-      announced: false,
-      editFailed: false,
-      chain: Promise.resolve()
+      text: ''
     };
-    const liveText = new ThrottledTextUpdater(
-      (text) => this.patchOutputText(outputText, text),
-      textUpdateMinIntervalMs
-    );
     let liveCard = cardMessageId
       ? new ThrottledCardUpdater((update) => this.safePatchCard(cardMessageId ?? '', update))
       : undefined;
 
     const ensureRunCard = async (): Promise<void> => {
-      if (cardMessageId) {
+      if (cardMessageId || cardUnavailable) {
         return;
       }
       const initialCard = {
@@ -371,7 +420,11 @@ export class RuntimeOrchestrator {
           }
         ]
       };
-      cardMessageId = (await this.sendCardOrNotify(session.chatId, initialCard)) ?? null;
+      cardMessageId = (await this.sendCardOrNotify(deliveryTarget, initialCard)) ?? null;
+      cardUnavailable = cardMessageId === null;
+      if (cardUnavailable) {
+        return;
+      }
       isNewCardForThisRun = true;
       this.store.setSessionRun(session.key, 'running', cardMessageId);
       const current = this.runs.get(session.key);
@@ -394,10 +447,15 @@ export class RuntimeOrchestrator {
 
       if (event.type === 'text') {
         outputText.text += event.text;
-        outputText.chain = outputText.chain.then(() =>
-          this.publishOutputText(outputText, liveText, session.chatId)
-        );
-        return outputText.chain;
+        agentState = reduceAgentState(agentState, event);
+        await ensureRunCard();
+        liveCard?.request({
+          title: isNewCardForThisRun ? 'Grok 正在处理' : 'Grok 继续处理',
+          status: 'info',
+          body: toCardBody(agentState),
+          actions: runActions(session.key)
+        });
+        return Promise.resolve();
       }
 
       // Feed event into the structured state machine (big UX upgrade)
@@ -460,9 +518,9 @@ export class RuntimeOrchestrator {
         }
         try {
           if (artifactKind === 'image') {
-            await this.api.sendImage(session.chatId, artifactPath);
+            await this.api.sendImage(session.chatId, artifactPath, deliveryTarget.reply);
           } else {
-            await this.api.sendVideo(session.chatId, artifactPath);
+            await this.api.sendVideo(session.chatId, artifactPath, undefined, deliveryTarget.reply);
           }
           agentState = reduceAgentState(agentState, {
             type: 'status',
@@ -497,43 +555,37 @@ export class RuntimeOrchestrator {
           prompt,
           cwd: session.cwd,
           sessionId: session.grokSessionId,
+          nativeSessionId: session.nativeSessionId,
           contextKey: session.key,
           requestedByOpenId: message.senderOpenId
         },
         update,
         controller.signal
       );
-      await outputText.chain;
-      await liveText.flush();
       await liveCard?.flush();
 
       // Finalize the structured state
       agentState = finalizeIfRunning(agentState);
-      const finalBody = toHybridCardBody(agentState, outputText);
+      const finalContent = toHybridCardContent(agentState, outputText);
 
-      if (cardMessageId || code !== 0 || outputText.text.length === 0) {
-        await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
-          title: code === 0 ? 'Grok 已回复' : 'Grok 执行失败',
-          status: code === 0 ? 'success' : 'error',
-          body: finalBody
-        });
-      }
+      await this.reportRunUpdate(deliveryTarget, cardMessageId ?? undefined, {
+        title: code === 0 ? 'Grok 已回复' : 'Grok 执行失败',
+        status: code === 0 ? 'success' : 'error',
+        body: finalContent.body,
+        processLog: finalContent.processLog
+      });
     } catch (error) {
-      await outputText.chain;
-      await liveText.flush();
       await liveCard?.flush();
       if (!timeoutState.timedOut) {
         agentState = markInterrupted(agentState);
         if (error instanceof GrokRunAbortedError) {
-          if (cardMessageId) {
-            await this.reportRunUpdate(session.chatId, cardMessageId, {
-              title: 'Grok 已停止',
-              status: 'warning',
-              body: '本轮运行已手动停止。'
-            });
-          }
+          await this.reportRunUpdate(deliveryTarget, cardMessageId ?? undefined, {
+            title: 'Grok 已停止',
+            status: 'warning',
+            body: '本轮运行已手动停止。'
+          });
         } else {
-          await this.reportRunUpdate(session.chatId, cardMessageId ?? undefined, {
+          await this.reportRunUpdate(deliveryTarget, cardMessageId ?? undefined, {
             title: 'Grok 执行异常',
             status: 'error',
             body: toError(error).message
@@ -654,7 +706,7 @@ export class RuntimeOrchestrator {
       },
       async (error) => {
         await this.notifyText(
-          session.chatId,
+          toDeliveryTarget(message),
           `Grok 队列任务失败: ${toError(error).message}`,
           'queued run failure'
         );
@@ -688,68 +740,31 @@ export class RuntimeOrchestrator {
   private async safePatchCard(
     messageId: string,
     update: Parameters<FeishuApiPort['patchCard']>[1],
-    fallbackChatId?: string
+    fallbackTarget?: MessageDeliveryTarget
   ): Promise<void> {
     try {
       await this.api.patchCard(messageId, update);
     } catch (error) {
       this.record('error', `Failed to patch Feishu card ${messageId}: ${describeError(error)}`);
-      if (fallbackChatId) {
-        await this.notifyText(fallbackChatId, formatCardUpdate(update), 'card patch failure');
+      if (fallbackTarget) {
+        await this.notifyText(fallbackTarget, formatCardUpdate(update), 'card patch failure');
       }
     }
-  }
-
-  private async patchOutputText(output: OutputTextState, text: string): Promise<void> {
-    if (!output.messageId || output.editFailed) {
-      return;
-    }
-    try {
-      await this.api.patchText(output.messageId, text);
-      output.deliveredText = text;
-    } catch (error) {
-      output.editFailed = true;
-      this.record(
-        'error',
-        `Failed to patch Feishu text ${output.messageId}: ${describeError(error)}`
-      );
-    }
-  }
-
-  private async publishOutputText(
-    output: OutputTextState,
-    liveText: ThrottledTextUpdater,
-    chatId: string
-  ): Promise<void> {
-    const text = truncate(output.text, 8000);
-    if (!text) {
-      return;
-    }
-    if (!output.messageId) {
-      try {
-        output.messageId = await this.api.sendText(chatId, text);
-        output.deliveredText = text;
-      } catch (error) {
-        this.record(
-          'error',
-          `Failed to send Feishu output text to ${chatId}: ${describeError(error)}`
-        );
-      }
-      return;
-    }
-    liveText.request(text);
   }
 
   private async sendCardOrNotify(
-    chatId: string,
+    target: MessageDeliveryTarget,
     update: Parameters<FeishuApiPort['sendCard']>[1]
   ): Promise<string | undefined> {
     try {
-      return await this.api.sendCard(chatId, update);
+      return await this.api.sendCard(target.chatId, update, target.reply);
     } catch (error) {
-      this.record('error', `Failed to send Feishu card to ${chatId}: ${describeError(error)}`);
+      this.record(
+        'error',
+        `Failed to send Feishu card to ${target.chatId}: ${describeError(error)}`
+      );
       await this.notifyText(
-        chatId,
+        target,
         `Grok 卡片发送失败，改用文本回报。\n${toError(error).message}`,
         'card send failure'
       );
@@ -758,24 +773,28 @@ export class RuntimeOrchestrator {
   }
 
   private async reportRunUpdate(
-    chatId: string,
+    target: MessageDeliveryTarget,
     messageId: string | undefined,
     update: Parameters<FeishuApiPort['patchCard']>[1]
   ): Promise<void> {
     if (messageId) {
-      await this.safePatchCard(messageId, update, chatId);
+      await this.safePatchCard(messageId, update, target);
       return;
     }
-    await this.notifyText(chatId, formatCardUpdate(update), 'run text update');
+    await this.notifyText(target, formatCardUpdate(update), 'run text update');
   }
 
-  private async notifyText(chatId: string, text: string, label: string): Promise<void> {
+  private async notifyText(
+    target: MessageDeliveryTarget,
+    text: string,
+    label: string
+  ): Promise<void> {
     try {
-      await this.api.sendText(chatId, text);
+      await this.api.sendText(target.chatId, text, target.reply);
     } catch (error) {
       this.record(
         'error',
-        `Failed to send Feishu text fallback (${label}) to ${chatId}: ${describeError(error)}`
+        `Failed to send Feishu text fallback (${label}) to ${target.chatId}: ${describeError(error)}`
       );
     }
   }
@@ -801,6 +820,8 @@ function buildHelpCard(contextKey: string): FeishuCardUpdate {
     body: [
       '常用命令可以直接点击下方按钮。',
       '',
+      '新话题：标题，路径 /path',
+      '/topic <title> [路径 <path>]',
       '/cd <path>',
       '/workspace list|save|use|remove',
       '/approval confirm_write|confirm_all|auto'
@@ -856,6 +877,12 @@ function commandTitle(text: string): string {
     case '/cd':
       return '工作目录';
     case '/workspace':
+      if (subcommand === 'list') {
+        return '工作目录';
+      }
+      if (subcommand === 'use') {
+        return '工作目录已切换';
+      }
       return subcommand ? `Workspace ${subcommand}` : 'Workspace';
     case '/approval':
       return '审批策略';
@@ -869,37 +896,47 @@ function commandTitle(text: string): string {
 }
 
 function formatCardUpdate(update: Parameters<FeishuApiPort['patchCard']>[1]): string {
-  return `${update.title}\n${update.body}`;
+  return [update.title, update.processLog, update.body].filter(Boolean).join('\n');
 }
 
-function toHybridCardBody(state: AgentRunState, output: OutputTextState): string {
+function toHybridCardContent(
+  state: AgentRunState,
+  output: OutputTextState
+): { readonly body: string; readonly processLog?: string } {
   const body = toCardBody(state);
+  const processLog = toProcessLog(state) || undefined;
   if (output.text.length === 0) {
-    return body;
+    return { body };
   }
-  if (output.editFailed) {
-    const missingText = missingDeliveredText(output);
-    if (!missingText) {
-      return body === '（无输出）' ? '文本输出见下方消息。' : `文本输出见下方消息。\n\n${body}`;
-    }
-    const text = `文本消息编辑失败，补充内容：\n\n${missingText}`;
-    return body === '（无输出）' ? text : `${text}\n\n${body}`;
-  }
-  if (body === '（无输出）') {
-    return '文本输出见下方消息。';
-  }
-  return `文本输出见下方消息。\n\n${body}`;
-}
-
-function missingDeliveredText(output: OutputTextState): string {
-  if (output.text.startsWith(output.deliveredText)) {
-    return output.text.slice(output.deliveredText.length).trim();
-  }
-  return output.text.trim();
+  return { body: output.text, processLog };
 }
 
 function resolveArtifactPath(cwd: string, artifactPath: string): string {
   return path.isAbsolute(artifactPath) ? artifactPath : path.resolve(cwd, artifactPath);
+}
+
+function toDeliveryTarget(message: IncomingMessage): MessageDeliveryTarget {
+  const replyToMessageId =
+    message.rootId ?? message.parentId ?? message.replyToMessageId ?? message.threadId;
+  if (!replyToMessageId) {
+    return { chatId: message.chatId };
+  }
+  return {
+    chatId: message.chatId,
+    reply: {
+      replyToMessageId,
+      replyInThread: true
+    }
+  };
+}
+
+function assertDirectory(cwd: string, label: string): void {
+  if (!fs.existsSync(cwd)) {
+    throw new Error(`${label} does not exist: ${cwd}`);
+  }
+  if (!fs.statSync(cwd).isDirectory()) {
+    throw new Error(`${label} is not a directory: ${cwd}`);
+  }
 }
 
 function localArtifactKind(filePath: string): 'image' | 'video' | undefined {
@@ -962,45 +999,6 @@ class ThrottledCardUpdater {
     this.pending = undefined;
     await this.inFlight;
     this.inFlight = this.patch(update);
-    await this.inFlight;
-    this.lastPatchAt = Date.now();
-  }
-}
-
-class ThrottledTextUpdater {
-  private timer: NodeJS.Timeout | undefined;
-  private pending: string | undefined;
-  private inFlight: Promise<void> = Promise.resolve();
-  private lastPatchAt = 0;
-
-  constructor(
-    private readonly patch: (text: string) => Promise<void>,
-    private readonly minIntervalMs: number
-  ) {}
-
-  request(text: string): void {
-    this.pending = text;
-    if (this.timer) {
-      return;
-    }
-    const delay = Math.max(0, this.minIntervalMs - (Date.now() - this.lastPatchAt));
-    this.timer = setTimeout(() => {
-      void this.flush();
-    }, delay);
-  }
-
-  async flush(): Promise<void> {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
-    const text = this.pending;
-    if (text === undefined) {
-      return;
-    }
-    this.pending = undefined;
-    await this.inFlight;
-    this.inFlight = this.patch(text);
     await this.inFlight;
     this.lastPatchAt = Date.now();
   }

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { FeishuApiPort } from '../src/feishu-api.js';
+import type { FeishuApiPort, MessageReplyOptions } from '../src/feishu-api.js';
 import { FeishuToolExecutor } from '../src/feishu-tools.js';
 import { GrokRunAbortedError } from '../src/grok.js';
 import { RuntimeOrchestrator } from '../src/orchestrator.js';
@@ -33,6 +33,10 @@ afterEach(() => {
 class FakeFeishuApi implements FeishuApiPort {
   readonly cards: FeishuCardUpdate[] = [];
   readonly texts: string[] = [];
+  readonly textTargets: MessageReplyOptions[] = [];
+  readonly cardTargets: MessageReplyOptions[] = [];
+  readonly imageTargets: MessageReplyOptions[] = [];
+  readonly videoTargets: MessageReplyOptions[] = [];
   readonly patchedTexts: string[] = [];
   readonly images: string[] = [];
   readonly videos: string[] = [];
@@ -43,13 +47,23 @@ class FakeFeishuApi implements FeishuApiPort {
     private readonly failTextPatches = false
   ) {}
 
-  sendText(_chatId: string, text: string): Promise<string | undefined> {
+  sendText(
+    _chatId: string,
+    text: string,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
     this.texts.push(text);
+    this.textTargets.push(options);
     return Promise.resolve('msg_text');
   }
 
-  sendImage(_chatId: string, sourcePath: string): Promise<string | undefined> {
+  sendImage(
+    _chatId: string,
+    sourcePath: string,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
     this.images.push(sourcePath);
+    this.imageTargets.push(options);
     return Promise.resolve('msg_image');
   }
 
@@ -61,8 +75,14 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve('msg_audio');
   }
 
-  sendVideo(_chatId: string, sourcePath: string): Promise<string | undefined> {
+  sendVideo(
+    _chatId: string,
+    sourcePath: string,
+    _input?: { readonly duration?: number; readonly coverImageKey?: string },
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
     this.videos.push(sourcePath);
+    this.videoTargets.push(options);
     return Promise.resolve('msg_video');
   }
 
@@ -84,11 +104,16 @@ class FakeFeishuApi implements FeishuApiPort {
     return Promise.resolve();
   }
 
-  sendCard(_chatId: string, update: FeishuCardUpdate): Promise<string | undefined> {
+  sendCard(
+    _chatId: string,
+    update: FeishuCardUpdate,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
     if (this.failCards) {
       return Promise.reject(new Error('card failed'));
     }
     this.cards.push(update);
+    this.cardTargets.push(options);
     return Promise.resolve('msg_card');
   }
 
@@ -108,6 +133,7 @@ class FakeFeishuApi implements FeishuApiPort {
 
 class FakeGrok implements GrokBackend {
   readonly prompts: string[] = [];
+  readonly inputs: GrokRunInput[] = [];
 
   constructor(private readonly events: readonly GrokEvent[] = [{ type: 'text', text: '你好' }]) {}
 
@@ -117,6 +143,7 @@ class FakeGrok implements GrokBackend {
     signal: AbortSignal
   ): Promise<number> {
     void signal;
+    this.inputs.push(input);
     this.prompts.push(input.prompt);
     return this.events
       .reduce((promise, event) => promise.then(() => onEvent(event)), Promise.resolve())
@@ -155,10 +182,11 @@ describe('RuntimeOrchestrator', () => {
   it('uses a lightweight status card for ordinary text replies', async () => {
     const { orchestrator, api } = createRuntime(new FakeFeishuApi());
     await orchestrator.handleMessage(message());
-    await waitFor(() => api.texts.includes('你好'));
+    await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
 
     expect(api.cards[0]?.title).toBe('Grok 已收到');
     expect(api.cards.at(-1)?.title).toBe('Grok 已回复');
+    expect(api.cards.at(-1)?.body).toBe('你好');
   });
 
   it('falls back to text when a command card cannot be sent', async () => {
@@ -205,7 +233,7 @@ describe('RuntimeOrchestrator', () => {
     expect(api.downloads[0]).toContain('om_image:image:img_1:');
   });
 
-  it('streams assistant text through an editable text message', async () => {
+  it('renders assistant text in the final card body', async () => {
     const api = new FakeFeishuApi();
     const grok = new FakeGrok([
       { type: 'text', text: '你' },
@@ -213,10 +241,27 @@ describe('RuntimeOrchestrator', () => {
     ]);
     const { orchestrator } = createRuntime(api, grok);
     await orchestrator.handleMessage(message());
-    await waitFor(() => api.patchedTexts.includes('你好'));
+    await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
 
-    expect(api.texts).toContain('你');
-    expect(api.cards.at(-1)?.body).toContain('文本输出见下方消息');
+    expect(api.texts).toEqual([]);
+    expect(api.patchedTexts).toEqual([]);
+    expect(api.cards.at(-1)?.body).toBe('你好');
+  });
+
+  it('keeps one text fallback and final answer when run cards cannot be sent', async () => {
+    const api = new FakeFeishuApi(true);
+    const grok = new FakeGrok([
+      { type: 'text', text: '你' },
+      { type: 'text', text: '好' }
+    ]);
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message());
+    await waitFor(() => api.texts.some((text) => text.includes('Grok 已回复\n你好')));
+
+    expect(api.cards).toEqual([]);
+    expect(api.texts.filter((text) => text.includes('Grok 卡片发送失败'))).toHaveLength(1);
+    expect(api.texts).toContain('Grok 已回复\n你好');
   });
 
   it('downloads inbound media and passes local paths to Grok', async () => {
@@ -246,7 +291,7 @@ describe('RuntimeOrchestrator', () => {
     expect(grok.prompts[0]).not.toContain('image_key');
   });
 
-  it('only puts undelivered text in the card when message editing fails', async () => {
+  it('keeps the full assistant text in the card when plain text editing is unavailable', async () => {
     const api = new FakeFeishuApi(false, true);
     const grok = new FakeGrok([
       { type: 'text', text: '你' },
@@ -257,10 +302,9 @@ describe('RuntimeOrchestrator', () => {
     await orchestrator.handleMessage(message());
     await waitFor(() => api.cards.at(-1)?.title === 'Grok 已回复');
 
-    expect(api.texts).toEqual(['你']);
-    expect(api.cards.at(-1)?.body).toContain('文本消息编辑失败，补充内容');
-    expect(api.cards.at(-1)?.body).toContain('好呀');
-    expect(api.cards.at(-1)?.body).not.toContain('你好呀');
+    expect(api.texts).toEqual([]);
+    expect(api.patchedTexts).toEqual([]);
+    expect(api.cards.at(-1)?.body).toBe('你好呀');
   });
 
   it('shows queued follow-up messages while a run is active', async () => {
@@ -406,6 +450,89 @@ describe('RuntimeOrchestrator', () => {
     expect(api.cards.at(-1)?.actions?.length).toBeGreaterThan(0);
   });
 
+  it('creates a replyable topic seed session with its own cwd', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok();
+    const { orchestrator, store } = createRuntime(api, grok);
+    const topicDir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-topic-'));
+    dirs.push(topicDir);
+
+    await orchestrator.handleMessage(
+      message(`新话题：重构 storage，路径 ${topicDir}`, 'evt_topic')
+    );
+
+    expect(api.texts[0]).toContain('新话题：重构 storage');
+    expect(api.texts[0]).toContain(`工作目录：${topicDir}`);
+    expect(store.getSession('chat_1:msg_text')?.cwd).toBe(topicDir);
+    expect(grok.prompts).toEqual([]);
+
+    await orchestrator.handleMessage({
+      ...message('继续', 'evt_topic_reply'),
+      messageId: 'msg_reply',
+      parentId: 'msg_text',
+      threadId: 'thread_1'
+    });
+    await waitFor(() => grok.inputs.length === 1);
+
+    expect(grok.inputs[0]?.contextKey).toBe('chat_1:msg_text');
+    expect(grok.inputs[0]?.cwd).toBe(topicDir);
+    expect(api.cardTargets.at(-1)).toEqual({
+      replyToMessageId: 'msg_text',
+      replyInThread: true
+    });
+  });
+
+  it('rejects topic seeds with a missing cwd before creating a reply target', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok();
+    const { orchestrator, store } = createRuntime(api, grok);
+    const missingDir = path.join(os.tmpdir(), `grok-topic-missing-${String(Date.now())}`);
+
+    await orchestrator.handleMessage(
+      message(`新话题：坏路径，路径 ${missingDir}`, 'evt_bad_topic')
+    );
+
+    expect(api.texts).toEqual([]);
+    expect(api.cards.at(-1)?.title).toBe('新话题创建失败');
+    expect(api.cards.at(-1)?.body).toBe(`Topic workspace does not exist: ${missingDir}`);
+    expect(store.getSession('chat_1:msg_text')).toBeUndefined();
+    expect(grok.prompts).toEqual([]);
+  });
+
+  it('rejects replies in an existing topic when its cwd no longer exists', async () => {
+    const api = new FakeFeishuApi();
+    const grok = new FakeGrok();
+    const { orchestrator, store } = createRuntime(api, grok);
+    const missingDir = path.join(os.tmpdir(), `grok-topic-gone-${String(Date.now())}`);
+    store.upsertSession({
+      key: 'chat_1:msg_root',
+      chatId: 'chat_1',
+      rootId: 'msg_root',
+      threadId: null,
+      grokSessionId: 'grok_topic',
+      nativeSessionId: null,
+      cwd: missingDir,
+      approvalPolicy: 'auto',
+      runStatus: 'idle',
+      activeMessageId: null
+    });
+
+    await orchestrator.handleMessage({
+      ...message('继续', 'evt_missing_topic_cwd'),
+      messageId: 'msg_reply',
+      parentId: 'msg_root',
+      threadId: 'thread_1'
+    });
+    await waitFor(() => api.cards.at(-1)?.title === '工作目录无效');
+
+    expect(api.cards.at(-1)?.body).toBe(`Workspace does not exist: ${missingDir}`);
+    expect(api.cardTargets.at(-1)).toEqual({
+      replyToMessageId: 'msg_root',
+      replyInThread: true
+    });
+    expect(grok.prompts).toEqual([]);
+  });
+
   it('renders manual stop as a stopped run instead of an error', async () => {
     const api = new FakeFeishuApi();
     const grok = new BlockingGrok();
@@ -418,6 +545,19 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.cards.at(-1)?.status).toBe('warning');
   });
+
+  it('reports manual stop through text fallback when run cards cannot be sent', async () => {
+    const api = new FakeFeishuApi(true);
+    const grok = new BlockingGrok();
+    const { orchestrator } = createRuntime(api, grok);
+
+    await orchestrator.handleMessage(message('第一条', 'evt_1'));
+    await waitFor(() => grok.prompts.length === 1);
+    await orchestrator.handleMessage(message('/stop', 'evt_stop'));
+    await waitFor(() => api.texts.some((text) => text.includes('Grok 已停止')));
+
+    expect(api.texts).toContain('Grok 已停止\n本轮运行已手动停止。');
+  });
 });
 
 function createRuntime(
@@ -426,6 +566,7 @@ function createRuntime(
 ): {
   readonly orchestrator: RuntimeOrchestrator;
   readonly api: FakeFeishuApi;
+  readonly store: StateStore;
 } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
   dirs.push(dir);
@@ -450,7 +591,8 @@ function createRuntime(
   const tools = new FeishuToolExecutor(api, store, sessions);
   return {
     orchestrator: new RuntimeOrchestrator(config, api, store, sessions, grok, tools),
-    api
+    api,
+    store
   };
 }
 

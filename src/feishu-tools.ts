@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { requiresApproval } from './approval.js';
-import type { FeishuApiPort } from './feishu-api.js';
+import type { FeishuApiPort, MessageReplyOptions } from './feishu-api.js';
 import { findTool, type ToolDefinition } from './permissions.js';
 import { SessionService } from './session.js';
 import { StateStore } from './storage.js';
@@ -28,37 +28,41 @@ export class FeishuToolExecutor {
         argsJson: JSON.stringify(input),
         requestedByOpenId
       });
-      await this.api.sendCard(session.chatId, {
-        title: 'Grok 请求执行飞书操作',
-        status: 'warning',
-        body: [
-          `工具: ${tool.name}`,
-          `目标: ${approval.target}`,
-          `来源: ${contextKey}`,
-          '',
-          '请确认是否执行。'
-        ].join('\n'),
-        actions: [
-          {
-            text: '确认执行',
-            type: 'primary',
-            value: {
-              action: 'approval_approve',
-              approval_id: approval.id,
-              context_key: contextKey
+      await this.api.sendCard(
+        session.chatId,
+        {
+          title: 'Grok 请求执行飞书操作',
+          status: 'warning',
+          body: [
+            `工具: ${tool.name}`,
+            `目标: ${approval.target}`,
+            `来源: ${contextKey}`,
+            '',
+            '请确认是否执行。'
+          ].join('\n'),
+          actions: [
+            {
+              text: '确认执行',
+              type: 'primary',
+              value: {
+                action: 'approval_approve',
+                approval_id: approval.id,
+                context_key: contextKey
+              }
+            },
+            {
+              text: '拒绝',
+              type: 'danger',
+              value: {
+                action: 'approval_reject',
+                approval_id: approval.id,
+                context_key: contextKey
+              }
             }
-          },
-          {
-            text: '拒绝',
-            type: 'danger',
-            value: {
-              action: 'approval_reject',
-              approval_id: approval.id,
-              context_key: contextKey
-            }
-          }
-        ]
-      });
+          ]
+        },
+        replyOptionsForSession(session)
+      );
       return { text: `Approval requested: ${approval.id}` };
     }
 
@@ -98,36 +102,44 @@ export class FeishuToolExecutor {
   ): Promise<FeishuToolResult> {
     switch (toolName) {
       case 'lark_msg_send_image': {
+        const chatId = readRequiredString(input, 'chat_id');
         const messageId = await this.api.sendImage(
-          readRequiredString(input, 'chat_id'),
-          readRequiredString(input, 'file_path')
+          chatId,
+          readRequiredString(input, 'file_path'),
+          replyOptionsForSession(session, chatId)
         );
         return { text: JSON.stringify({ message_id: messageId }) };
       }
       case 'lark_msg_send_file': {
+        const chatId = readRequiredString(input, 'chat_id');
         const messageId = await this.api.sendFile(
-          readRequiredString(input, 'chat_id'),
+          chatId,
           readRequiredString(input, 'file_path'),
-          readOptionalString(input, 'file_name')
+          readOptionalString(input, 'file_name'),
+          replyOptionsForSession(session, chatId)
         );
         return { text: JSON.stringify({ message_id: messageId }) };
       }
       case 'lark_msg_send_audio': {
+        const chatId = readRequiredString(input, 'chat_id');
         const messageId = await this.api.sendAudio(
-          readRequiredString(input, 'chat_id'),
+          chatId,
           readRequiredString(input, 'file_path'),
-          readOptionalNumber(input, 'duration')
+          readOptionalNumber(input, 'duration'),
+          replyOptionsForSession(session, chatId)
         );
         return { text: JSON.stringify({ message_id: messageId }) };
       }
       case 'lark_msg_send_video': {
+        const chatId = readRequiredString(input, 'chat_id');
         const messageId = await this.api.sendVideo(
-          readRequiredString(input, 'chat_id'),
+          chatId,
           readRequiredString(input, 'file_path'),
           {
             duration: readOptionalNumber(input, 'duration'),
             coverImageKey: readOptionalString(input, 'cover_image_key')
-          }
+          },
+          replyOptionsForSession(session, chatId)
         );
         return { text: JSON.stringify({ message_id: messageId }) };
       }
@@ -260,6 +272,23 @@ export class FeishuToolExecutor {
         throw new Error(`Unhandled tool: ${toolName} for session ${session.key}`);
     }
   }
+}
+
+function replyOptionsForSession(
+  session: SessionRecord,
+  chatId = session.chatId
+): MessageReplyOptions | undefined {
+  if (chatId !== session.chatId) {
+    return undefined;
+  }
+  const replyToMessageId = session.rootId ?? session.threadId;
+  if (!replyToMessageId) {
+    return undefined;
+  }
+  return {
+    replyToMessageId,
+    replyInThread: true
+  };
 }
 
 function readContextKey(input: unknown): string {

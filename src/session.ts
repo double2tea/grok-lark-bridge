@@ -123,6 +123,33 @@ export class SessionService {
     return updated;
   }
 
+  createTopicSeedSession(input: {
+    readonly chatId: string;
+    readonly rootMessageId: string;
+    readonly cwd: string;
+    readonly approvalPolicy: ApprovalPolicy;
+  }): SessionRecord {
+    const key = makeSessionKey({ chatId: input.chatId, rootId: input.rootMessageId });
+    this.store.upsertSession({
+      key,
+      chatId: input.chatId,
+      rootId: input.rootMessageId,
+      threadId: null,
+      grokSessionId: this.store.createGrokSessionId(),
+      nativeSessionId: null,
+      cwd: input.cwd,
+      approvalPolicy: input.approvalPolicy,
+      runStatus: 'idle',
+      activeMessageId: null
+    });
+    const created = this.store.getSession(key);
+    if (!created) {
+      throw new Error(`Failed to create topic seed session: ${key}`);
+    }
+    this.store.rememberSessionAliases(created.key, [key]);
+    return created;
+  }
+
   private resolveDefaultPolicy(chatId: string, openId: string): ApprovalPolicy {
     const chatOverride = this.access.approvalOverrides.find(
       (override) => override.scope === 'chat' && override.id === chatId

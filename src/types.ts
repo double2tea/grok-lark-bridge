@@ -6,6 +6,12 @@ export type ToolRisk = (typeof toolRisks)[number];
 
 export type RunStatus = 'idle' | 'running' | 'stopping';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
+export type SessionEventAction =
+  | 'reuse'
+  | 'load'
+  | 'new'
+  | 'new_after_load_failed'
+  | 'new_without_load_support';
 
 export interface BridgeConfig {
   readonly feishuAppId: string;
@@ -91,10 +97,26 @@ export interface SessionRecord {
   readonly activeMessageId: string | null;
 }
 
+export interface TopicSeedRequest {
+  readonly title: string;
+  readonly cwdInput?: string;
+}
+
+export interface SessionEventRecord {
+  readonly id: number;
+  readonly contextKey: string;
+  readonly grokSessionId: string;
+  readonly nativeSessionId: string | null;
+  readonly action: SessionEventAction;
+  readonly detail: string | null;
+  readonly createdAt: number;
+}
+
 export interface GrokRunInput {
   readonly prompt: string;
   readonly cwd: string;
   readonly sessionId: string;
+  readonly nativeSessionId?: string | null;
   readonly contextKey: string;
   readonly requestedByOpenId: string;
 }
@@ -129,6 +151,8 @@ export interface FeishuCardUpdate {
   readonly title: string;
   readonly body: string;
   readonly status: 'info' | 'success' | 'error' | 'warning';
+  readonly processLog?: string;
+  readonly processLogTitle?: string;
   readonly actions?: readonly CardAction[];
 }
 

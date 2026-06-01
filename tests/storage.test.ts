@@ -80,4 +80,30 @@ describe('StateStore', () => {
     expect(store.resolveSessionAlias('chat_1:thread_1')).toBe('chat_1:root_1');
     store.close();
   });
+
+  it('records native session lifecycle events', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'grok-lark-bridge-'));
+    dirs.push(dir);
+    const store = new StateStore(dir);
+
+    store.recordSessionEvent({
+      contextKey: 'chat_1',
+      grokSessionId: 'grok_1',
+      nativeSessionId: 'acp_1',
+      action: 'load',
+      detail: null
+    });
+
+    expect(store.listRecentSessionEvents(1)[0]).toMatchObject({
+      contextKey: 'chat_1',
+      grokSessionId: 'grok_1',
+      nativeSessionId: 'acp_1',
+      action: 'load',
+      detail: null
+    });
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    store.pruneSessionEvents(1);
+    expect(store.listRecentSessionEvents(1)).toEqual([]);
+    store.close();
+  });
 });

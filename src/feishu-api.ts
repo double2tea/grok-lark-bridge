@@ -17,19 +17,47 @@ export interface MessageResourceDownload {
   readonly fileName?: string;
 }
 
+export interface MessageReplyOptions {
+  readonly replyToMessageId?: string;
+  readonly replyInThread?: boolean;
+}
+
 export interface FeishuApiPort {
-  sendText(chatId: string, text: string): Promise<string | undefined>;
-  sendImage(chatId: string, sourcePath: string): Promise<string | undefined>;
-  sendFile(chatId: string, sourcePath: string, fileName?: string): Promise<string | undefined>;
-  sendAudio(chatId: string, sourcePath: string, duration?: number): Promise<string | undefined>;
+  sendText(
+    chatId: string,
+    text: string,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined>;
+  sendImage(
+    chatId: string,
+    sourcePath: string,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined>;
+  sendFile(
+    chatId: string,
+    sourcePath: string,
+    fileName?: string,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined>;
+  sendAudio(
+    chatId: string,
+    sourcePath: string,
+    duration?: number,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined>;
   sendVideo(
     chatId: string,
     sourcePath: string,
-    input?: { readonly duration?: number; readonly coverImageKey?: string }
+    input?: { readonly duration?: number; readonly coverImageKey?: string },
+    options?: MessageReplyOptions
   ): Promise<string | undefined>;
   downloadMessageResource(input: MessageResourceDownload): Promise<string>;
   patchText(messageId: string, text: string): Promise<void>;
-  sendCard(chatId: string, update: FeishuCardUpdate): Promise<string | undefined>;
+  sendCard(
+    chatId: string,
+    update: FeishuCardUpdate,
+    options?: MessageReplyOptions
+  ): Promise<string | undefined>;
   patchCard(messageId: string, update: FeishuCardUpdate): Promise<void>;
   rawOpenApi(input: {
     readonly method: HttpMethod;
@@ -70,45 +98,48 @@ export class FeishuApi implements FeishuApiPort {
     });
   }
 
-  async sendText(chatId: string, text: string): Promise<string | undefined> {
-    const response = await this.request('POST', '/open-apis/im/v1/messages', {
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'text',
-        content: JSON.stringify({ text })
-      }
-    });
-    return messageCreateResponseSchema.parse(response).data?.message_id;
+  async sendText(
+    chatId: string,
+    text: string,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
+    return this.sendMessage(chatId, 'text', { text }, options);
   }
 
-  async sendImage(chatId: string, sourcePath: string): Promise<string | undefined> {
+  async sendImage(
+    chatId: string,
+    sourcePath: string,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
     const imageKey = await this.uploadImage(sourcePath);
-    return this.sendUploadedMessage(chatId, 'image', { image_key: imageKey });
+    return this.sendMessage(chatId, 'image', { image_key: imageKey }, options);
   }
 
   async sendFile(
     chatId: string,
     sourcePath: string,
-    fileName = path.basename(sourcePath)
+    fileName = path.basename(sourcePath),
+    options: MessageReplyOptions = {}
   ): Promise<string | undefined> {
     const fileKey = await this.uploadFile(sourcePath, 'stream', fileName);
-    return this.sendUploadedMessage(chatId, 'file', { file_key: fileKey });
+    return this.sendMessage(chatId, 'file', { file_key: fileKey }, options);
   }
 
   async sendAudio(
     chatId: string,
     sourcePath: string,
-    duration?: number
+    duration?: number,
+    options: MessageReplyOptions = {}
   ): Promise<string | undefined> {
     const fileKey = await this.uploadFile(sourcePath, 'opus', path.basename(sourcePath), duration);
-    return this.sendUploadedMessage(chatId, 'audio', { file_key: fileKey });
+    return this.sendMessage(chatId, 'audio', { file_key: fileKey }, options);
   }
 
   async sendVideo(
     chatId: string,
     sourcePath: string,
-    input: { readonly duration?: number; readonly coverImageKey?: string } = {}
+    input: { readonly duration?: number; readonly coverImageKey?: string } = {},
+    options: MessageReplyOptions = {}
   ): Promise<string | undefined> {
     const fileKey = await this.uploadFile(
       sourcePath,
@@ -116,10 +147,15 @@ export class FeishuApi implements FeishuApiPort {
       path.basename(sourcePath),
       input.duration
     );
-    return this.sendUploadedMessage(chatId, 'media', {
-      file_key: fileKey,
-      ...(input.coverImageKey ? { image_key: input.coverImageKey } : {})
-    });
+    return this.sendMessage(
+      chatId,
+      'media',
+      {
+        file_key: fileKey,
+        ...(input.coverImageKey ? { image_key: input.coverImageKey } : {})
+      },
+      options
+    );
   }
 
   async downloadMessageResource(input: MessageResourceDownload): Promise<string> {
@@ -157,16 +193,12 @@ export class FeishuApi implements FeishuApiPort {
     });
   }
 
-  async sendCard(chatId: string, update: FeishuCardUpdate): Promise<string | undefined> {
-    const response = await this.request('POST', '/open-apis/im/v1/messages', {
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(buildCard(update))
-      }
-    });
-    return messageCreateResponseSchema.parse(response).data?.message_id;
+  async sendCard(
+    chatId: string,
+    update: FeishuCardUpdate,
+    options: MessageReplyOptions = {}
+  ): Promise<string | undefined> {
+    return this.sendMessage(chatId, 'interactive', buildCard(update), options);
   }
 
   async patchCard(messageId: string, update: FeishuCardUpdate): Promise<void> {
@@ -261,17 +293,33 @@ export class FeishuApi implements FeishuApiPort {
     return fileKey;
   }
 
-  private async sendUploadedMessage(
+  private async sendMessage(
     chatId: string,
-    msgType: 'image' | 'file' | 'audio' | 'media',
-    content: Record<string, string>
+    msgType: 'text' | 'interactive' | 'image' | 'file' | 'audio' | 'media',
+    content: Record<string, unknown>,
+    options: MessageReplyOptions
   ): Promise<string | undefined> {
+    const encodedContent = JSON.stringify(content);
+    if (options.replyToMessageId) {
+      const response = await this.request(
+        'POST',
+        `/open-apis/im/v1/messages/${encodeURIComponent(options.replyToMessageId)}/reply`,
+        {
+          data: {
+            msg_type: msgType,
+            content: encodedContent,
+            reply_in_thread: options.replyInThread ?? true
+          }
+        }
+      );
+      return messageCreateResponseSchema.parse(response).data?.message_id;
+    }
     const response = await this.request('POST', '/open-apis/im/v1/messages', {
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
         msg_type: msgType,
-        content: JSON.stringify(content)
+        content: encodedContent
       }
     });
     return messageCreateResponseSchema.parse(response).data?.message_id;
@@ -279,18 +327,66 @@ export class FeishuApi implements FeishuApiPort {
 }
 
 function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
+  const bodyElement = {
+    tag: 'markdown',
+    content: truncate(sanitizeForCard(update.body), 8000)
+  };
+  const processPanel = buildProcessPanel(update);
+  if (processPanel) {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true, update_multi: true },
+      header: {
+        title: { tag: 'plain_text', content: update.title },
+        template: cardTemplate(update.status)
+      },
+      body: {
+        elements: [processPanel, bodyElement, ...buildActions(update.actions ?? [])]
+      }
+    };
+  }
+
   return {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
       title: { tag: 'plain_text', content: update.title },
       template: cardTemplate(update.status)
     },
+    elements: [bodyElement, ...buildActions(update.actions ?? [])]
+  };
+}
+
+function buildProcessPanel(update: FeishuCardUpdate): Record<string, unknown> | null {
+  const content = truncate(sanitizeForCard(update.processLog ?? ''), 6000).trim();
+  if (!content) {
+    return null;
+  }
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: {
+      title: {
+        tag: 'markdown',
+        content: update.processLogTitle ?? '本轮处理'
+      },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon',
+        token: 'down-small-ccm_outlined',
+        size: '16px 16px'
+      },
+      icon_position: 'follow_text',
+      icon_expanded_angle: -180
+    },
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
     elements: [
       {
         tag: 'markdown',
-        content: truncate(sanitizeForCard(update.body), 8000)
-      },
-      ...buildActions(update.actions ?? [])
+        content,
+        text_size: 'notation'
+      }
     ]
   };
 }

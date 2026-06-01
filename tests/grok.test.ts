@@ -470,6 +470,90 @@ describe('ACP client methods', () => {
       }
     }
   });
+
+  it('loads a persisted native ACP session before prompting after restart', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-'));
+    const fakeGrok = path.join(dir, 'fake-grok-load.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokLoadScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const sessionEvents: string[] = [];
+    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+      sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
+    });
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'continue',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          nativeSessionId: 'sess_existing',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(
+        events
+          .filter((event) => event.type === 'status')
+          .map((event) => event.text)
+          .some((text) => text.includes('Grok 原生会话'))
+      ).toBe(false);
+      expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_existing' });
+      expect(sessionEvents).toEqual(['load:sess_existing:']);
+    } finally {
+      backend.close();
+    }
+  });
+
+  it('creates a new native ACP session when persisted load fails', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-fail-'));
+    const fakeGrok = path.join(dir, 'fake-grok-load-fail.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokLoadFailureScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const sessionEvents: string[] = [];
+    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+      sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
+    });
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'continue',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          nativeSessionId: 'sess_missing',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({
+        type: 'status',
+        text: '上次 Grok 会话无法恢复，已建立新的 Grok 会话。\n原因：unknown session'
+      });
+      expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_new' });
+      expect(sessionEvents).toEqual([
+        'new_after_load_failed:sess_new:previous=sess_missing error=unknown session'
+      ]);
+    } finally {
+      backend.close();
+    }
+  });
 });
 
 function fakeGrokScript(): string {
@@ -547,6 +631,118 @@ rl.on('line', (line) => {
         update: {
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: 'read:' + fileContent + '; term:' + message.result.output }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokLoadScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+let activeSessionId = '';
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({
+      id: message.id,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true },
+        authMethods: [{ id: 'cached_token' }]
+      }
+    });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/load') {
+    activeSessionId = message.params.sessionId;
+    send({ id: message.id, result: null });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, error: { code: -32000, message: 'unexpected new session' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: activeSessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'prompt:' + message.params.sessionId }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokLoadFailureScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+let activeSessionId = '';
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({
+      id: message.id,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true },
+        authMethods: [{ id: 'cached_token' }]
+      }
+    });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/load') {
+    send({ id: message.id, error: { code: -32000, message: 'unknown session' } });
+    return;
+  }
+  if (message.method === 'session/new') {
+    activeSessionId = 'sess_new';
+    send({ id: message.id, result: { sessionId: activeSessionId } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: activeSessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'prompt:' + message.params.sessionId }
         }
       }
     });
