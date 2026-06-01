@@ -901,10 +901,10 @@ function mergeMessages(messages: readonly IncomingMessage[]): IncomingMessage {
   };
 }
 
-class ThrottledCardUpdater {
+export class ThrottledCardUpdater {
   private timer: NodeJS.Timeout | undefined;
   private pending: Parameters<FeishuApiPort['patchCard']>[1] | undefined;
-  private inFlight: Promise<void> = Promise.resolve();
+  private drainPromise: Promise<void> | undefined;
   private lastPatchAt = 0;
 
   constructor(
@@ -914,7 +914,7 @@ class ThrottledCardUpdater {
 
   request(update: Parameters<FeishuApiPort['patchCard']>[1]): void {
     this.pending = update;
-    if (this.timer) {
+    if (this.timer || this.drainPromise) {
       return;
     }
     const delay = Math.max(0, this.minIntervalMs - (Date.now() - this.lastPatchAt));
@@ -928,19 +928,35 @@ class ThrottledCardUpdater {
       clearTimeout(this.timer);
       this.timer = undefined;
     }
-    const update = this.pending;
-    if (!update) {
+    if (this.drainPromise) {
+      await this.drainPromise;
+      if (this.pending) {
+        await this.flush();
+      }
       return;
     }
-    this.pending = undefined;
-    await this.inFlight;
-    const delay = Math.max(0, this.minIntervalMs - (Date.now() - this.lastPatchAt));
-    if (delay > 0) {
-      await sleep(delay);
+    this.drainPromise = this.drain();
+    try {
+      await this.drainPromise;
+    } finally {
+      this.drainPromise = undefined;
     }
-    this.inFlight = this.patch(update);
-    await this.inFlight;
-    this.lastPatchAt = Date.now();
+    if (this.pending) {
+      await this.flush();
+    }
+  }
+
+  private async drain(): Promise<void> {
+    while (this.pending) {
+      const update = this.pending;
+      this.pending = undefined;
+      const delay = Math.max(0, this.minIntervalMs - (Date.now() - this.lastPatchAt));
+      if (delay > 0) {
+        await sleep(delay);
+      }
+      await this.patch(update);
+      this.lastPatchAt = Date.now();
+    }
   }
 }
 

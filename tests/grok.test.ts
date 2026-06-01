@@ -569,10 +569,29 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
+function hasOnlyLarkMcp(servers) {
+  return Array.isArray(servers) &&
+    servers.length === 1 &&
+    servers[0].name === 'lark-mcp' &&
+    Array.isArray(servers[0].env);
+}
+
 rl.on('line', (line) => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
-    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    send({
+      id: message.id,
+      result: {
+        protocolVersion: 1,
+        authMethods: [{ id: 'cached_token' }],
+        _meta: {
+          mcpServers: [
+            { name: 'lark-mcp', source: 'local', type: 'stdio', command: 'npx', args: ['lark'], env: [] },
+            { name: 'grok-lark-bridge', source: 'local', type: 'stdio', command: 'node', args: ['old'], env: [] }
+          ]
+        }
+      }
+    });
     return;
   }
   if (message.method === 'authenticate') {
@@ -580,8 +599,8 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/new') {
-    if (!Array.isArray(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
       return;
     }
     send({ id: message.id, result: { sessionId: 'sess_test' } });
@@ -656,6 +675,13 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
+function hasOnlyLarkMcp(servers) {
+  return Array.isArray(servers) &&
+    servers.length === 1 &&
+    servers[0].name === 'lark-mcp' &&
+    Array.isArray(servers[0].env);
+}
+
 rl.on('line', (line) => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
@@ -664,7 +690,13 @@ rl.on('line', (line) => {
       result: {
         protocolVersion: 1,
         agentCapabilities: { loadSession: true },
-        authMethods: [{ id: 'cached_token' }]
+        authMethods: [{ id: 'cached_token' }],
+        _meta: {
+          mcpServers: [
+            { name: 'lark-mcp', source: 'local', type: 'stdio', command: 'npx', args: ['lark'], env: [] },
+            { name: 'grok-lark-bridge', source: 'local', type: 'stdio', command: 'node', args: ['old'], env: [] }
+          ]
+        }
       }
     });
     return;
@@ -674,8 +706,8 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
-    if (!Array.isArray(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
       return;
     }
     activeSessionId = message.params.sessionId;
@@ -716,6 +748,13 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
+function hasOnlyLarkMcp(servers) {
+  return Array.isArray(servers) &&
+    servers.length === 1 &&
+    servers[0].name === 'lark-mcp' &&
+    Array.isArray(servers[0].env);
+}
+
 rl.on('line', (line) => {
   const message = JSON.parse(line);
   if (message.method === 'initialize') {
@@ -724,7 +763,13 @@ rl.on('line', (line) => {
       result: {
         protocolVersion: 1,
         agentCapabilities: { loadSession: true },
-        authMethods: [{ id: 'cached_token' }]
+        authMethods: [{ id: 'cached_token' }],
+        _meta: {
+          mcpServers: [
+            { name: 'lark-mcp', source: 'local', type: 'stdio', command: 'npx', args: ['lark'], env: [] },
+            { name: 'grok-lark-bridge', source: 'local', type: 'stdio', command: 'node', args: ['old'], env: [] }
+          ]
+        }
       }
     });
     return;
@@ -734,16 +779,16 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
-    if (!Array.isArray(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
       return;
     }
     send({ id: message.id, error: { code: -32000, message: 'unknown session' } });
     return;
   }
   if (message.method === 'session/new') {
-    if (!Array.isArray(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing mcpServers' } });
+    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
       return;
     }
     activeSessionId = 'sess_new';

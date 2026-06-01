@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FeishuApiPort, MessageReplyOptions } from '../src/feishu-api.js';
 import { GrokRunAbortedError } from '../src/grok.js';
-import { RuntimeOrchestrator } from '../src/orchestrator.js';
+import { RuntimeOrchestrator, ThrottledCardUpdater } from '../src/orchestrator.js';
 import { SessionService } from '../src/session.js';
 import { StateStore } from '../src/storage.js';
 import type {
@@ -178,6 +178,28 @@ class BlockingGrok implements GrokBackend {
 }
 
 describe('RuntimeOrchestrator', () => {
+  it('serializes throttled card patches during fast streaming updates', async () => {
+    const bodies: string[] = [];
+    let activePatches = 0;
+    let maxActivePatches = 0;
+    const updater = new ThrottledCardUpdater(async (update) => {
+      bodies.push(update.body);
+      activePatches += 1;
+      maxActivePatches = Math.max(maxActivePatches, activePatches);
+      await sleep(5);
+      activePatches -= 1;
+    }, 5);
+
+    updater.request({ title: 'Grok 正在处理', status: 'info', body: 'first' });
+    const firstFlush = updater.flush();
+    updater.request({ title: 'Grok 正在处理', status: 'info', body: 'second' });
+    updater.request({ title: 'Grok 正在处理', status: 'info', body: 'third' });
+    await Promise.all([firstFlush, updater.flush(), updater.flush()]);
+
+    expect(maxActivePatches).toBe(1);
+    expect(bodies).toEqual(['first', 'third']);
+  });
+
   it('uses a lightweight status card for ordinary text replies', async () => {
     const { orchestrator, api } = createRuntime(new FakeFeishuApi());
     await orchestrator.handleMessage(message());

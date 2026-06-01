@@ -69,6 +69,19 @@ interface NativeSessionEvent {
 
 type NativeSessionEventRecorder = (event: NativeSessionEvent) => void;
 
+interface AcpMcpEnv {
+  readonly name: string;
+  readonly value: string;
+}
+
+interface AcpMcpServer {
+  readonly name: string;
+  readonly type: 'stdio';
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: readonly AcpMcpEnv[];
+}
+
 type JsonRpcId = number | string;
 
 interface TerminalExitStatus {
@@ -96,6 +109,7 @@ export class GrokAcpBackend implements GrokBackend {
   private readonly activeRuns = new Map<string, ActiveRun>();
   private readonly terminals = new Map<string, AcpTerminal>();
   private supportsLoadSession = false;
+  private mcpServers: readonly AcpMcpServer[] = [];
 
   constructor(
     private readonly grokBin: string,
@@ -237,6 +251,7 @@ export class GrokAcpBackend implements GrokBackend {
       }
     });
     this.supportsLoadSession = supportsAcpLoadSession(init);
+    this.mcpServers = selectSessionMcpServers(init);
     const methodId = chooseAuthMethod(init);
     await this.request('authenticate', { methodId, _meta: { headless: true } });
   }
@@ -253,7 +268,7 @@ export class GrokAcpBackend implements GrokBackend {
           {
             sessionId: input.nativeSessionId,
             cwd: input.cwd,
-            mcpServers: []
+            mcpServers: this.mcpServers
           },
           180000
         );
@@ -280,7 +295,7 @@ export class GrokAcpBackend implements GrokBackend {
   private async createSession(input: GrokRunInput): Promise<AcpSession> {
     const result = await this.request('session/new', {
       cwd: input.cwd,
-      mcpServers: []
+      mcpServers: this.mcpServers
     });
     const acpSessionId = readString(result, 'sessionId');
     if (!acpSessionId) {
@@ -1251,6 +1266,51 @@ function chooseAuthMethod(init: Record<string, unknown>): string {
     return 'cached_token';
   }
   throw new Error('Run `grok login` first, or set XAI_API_KEY.');
+}
+
+function selectSessionMcpServers(init: Record<string, unknown>): readonly AcpMcpServer[] {
+  const meta = init._meta;
+  if (!isRecord(meta) || !Array.isArray(meta.mcpServers)) {
+    return [];
+  }
+  return meta.mcpServers
+    .map(readAcpMcpServer)
+    .filter((server): server is AcpMcpServer => server?.name === 'lark-mcp');
+}
+
+function readAcpMcpServer(value: unknown): AcpMcpServer | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const name = readString(value, 'name');
+  const type = readString(value, 'type');
+  const command = readString(value, 'command');
+  const args = readStringArray(value.args) ?? [];
+  if (!name || type !== 'stdio' || !command) {
+    return undefined;
+  }
+  return {
+    name,
+    type,
+    command,
+    args,
+    env: readAcpMcpEnvArray(value.env)
+  };
+}
+
+function readAcpMcpEnvArray(value: unknown): readonly AcpMcpEnv[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((entry) => {
+    const record = expectRecord(entry, 'mcp server env entry');
+    const name = readString(record, 'name');
+    const envValue = readString(record, 'value');
+    if (!name || envValue === undefined) {
+      throw new Error('mcp server env entries require name and value');
+    }
+    return { name, value: envValue };
+  });
 }
 
 function readJsonRpcId(record: Record<string, unknown>, key: string): JsonRpcId | undefined {
