@@ -85,6 +85,8 @@ interface AcpMcpServer {
 
 type JsonRpcId = number | string;
 
+const acpPromptTimeoutMs = 12 * 60 * 1000;
+
 interface TerminalExitStatus {
   readonly exitCode: number | null;
   readonly signal: string | null;
@@ -179,7 +181,7 @@ export class GrokAcpBackend implements GrokBackend {
               sessionId: activeSession.acpSessionId,
               prompt: [{ type: 'text', text: buildPrompt(input) }]
             },
-            180000
+            acpPromptTimeoutMs
           )
         ),
         abortPromise
@@ -1428,6 +1430,9 @@ function buildPrompt(input: GrokRunInput): string {
     'Do not call a bridge-local Feishu MCP server; this bridge exposes zero local MCP tools.',
     'For general Feishu OpenAPI work such as docs, wiki, bitable, search, calendar or contact operations, prefer the official Lark/Feishu OpenAPI MCP server when it is available.',
     'Do not pass bridge-only context_key or requested_by_open_id to official Lark/Feishu MCP tools unless that tool schema explicitly asks for them.',
+    'Only call concrete MCP tools that are exposed in the current tool list; do not invent MCP tool names.',
+    'Do not call MCP meta tools such as lark-mcp__tools/list or list_resources.',
+    'If the user asks for a Feishu bitable without a link, app_token, table_id, or exact searchable name, ask for that identifier instead of guessing.',
     'Treat the user prompt below as the latest message in an ongoing Feishu conversation.',
     '',
     input.prompt
