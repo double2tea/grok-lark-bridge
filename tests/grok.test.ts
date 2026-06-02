@@ -474,7 +474,7 @@ describe('ACP client methods', () => {
   it('loads a persisted native ACP session before prompting after restart', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-'));
     const fakeGrok = path.join(dir, 'fake-grok-load.mjs');
-    await fs.writeFile(fakeGrok, fakeGrokLoadScript(), 'utf8');
+    await fs.writeFile(fakeGrok, fakeGrokLoadNoMcpScript(), 'utf8');
     await fs.chmod(fakeGrok, 0o755);
 
     const sessionEvents: string[] = [];
@@ -508,6 +508,42 @@ describe('ACP client methods', () => {
       ).toBe(false);
       expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_existing' });
       expect(sessionEvents).toEqual(['load:sess_existing:']);
+    } finally {
+      backend.close();
+    }
+  });
+
+  it('creates a fresh native ACP session instead of loading stale sessions when Lark MCP is configured', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-mcp-'));
+    const fakeGrok = path.join(dir, 'fake-grok-load-mcp.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokLoadScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const sessionEvents: string[] = [];
+    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+      sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
+    });
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'continue',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          nativeSessionId: 'sess_existing',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_new' });
+      expect(sessionEvents).toEqual(['new:sess_new:fresh session required for MCP servers']);
     } finally {
       backend.close();
     }
@@ -706,8 +742,72 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
+    send({ id: message.id, error: { code: -32000, message: 'unexpected load session' } });
+    return;
+  }
+  if (message.method === 'session/new') {
     if (!hasOnlyLarkMcp(message.params.mcpServers)) {
       send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
+      return;
+    }
+    activeSessionId = 'sess_new';
+    send({ id: message.id, result: { sessionId: activeSessionId } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: activeSessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'prompt:' + message.params.sessionId }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokLoadNoMcpScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+let activeSessionId = '';
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+function hasNoMcp(servers) {
+  return Array.isArray(servers) && servers.length === 0;
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({
+      id: message.id,
+      result: {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true },
+        authMethods: [{ id: 'cached_token' }]
+      }
+    });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/load') {
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
       return;
     }
     activeSessionId = message.params.sessionId;
@@ -748,11 +848,8 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
-function hasOnlyLarkMcp(servers) {
-  return Array.isArray(servers) &&
-    servers.length === 1 &&
-    servers[0].name === 'lark-mcp' &&
-    Array.isArray(servers[0].env);
+function hasNoMcp(servers) {
+  return Array.isArray(servers) && servers.length === 0;
 }
 
 rl.on('line', (line) => {
@@ -763,13 +860,7 @@ rl.on('line', (line) => {
       result: {
         protocolVersion: 1,
         agentCapabilities: { loadSession: true },
-        authMethods: [{ id: 'cached_token' }],
-        _meta: {
-          mcpServers: [
-            { name: 'lark-mcp', source: 'local', type: 'stdio', command: 'npx', args: ['lark'], env: [] },
-            { name: 'grok-lark-bridge', source: 'local', type: 'stdio', command: 'node', args: ['old'], env: [] }
-          ]
-        }
+        authMethods: [{ id: 'cached_token' }]
       }
     });
     return;
@@ -779,16 +870,16 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
-    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
       return;
     }
     send({ id: message.id, error: { code: -32000, message: 'unknown session' } });
     return;
   }
   if (message.method === 'session/new') {
-    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
       return;
     }
     activeSessionId = 'sess_new';

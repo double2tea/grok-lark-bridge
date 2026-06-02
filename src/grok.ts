@@ -45,6 +45,7 @@ interface AcpSessionResolution {
     | 'reused'
     | 'loaded'
     | 'created'
+    | 'created_with_mcp'
     | 'created_without_load_support'
     | 'created_after_load_failed';
   readonly previousNativeSessionId?: string;
@@ -261,7 +262,7 @@ export class GrokAcpBackend implements GrokBackend {
     if (existing && existing.cwd === input.cwd) {
       return { session: existing, source: 'reused' };
     }
-    if (input.nativeSessionId && this.supportsLoadSession) {
+    if (input.nativeSessionId && this.supportsLoadSession && this.mcpServers.length === 0) {
       try {
         await this.request(
           'session/load',
@@ -288,7 +289,11 @@ export class GrokAcpBackend implements GrokBackend {
     const created = await this.createSession(input);
     return {
       session: created,
-      source: input.nativeSessionId ? 'created_without_load_support' : 'created'
+      source: input.nativeSessionId
+        ? this.mcpServers.length > 0
+          ? 'created_with_mcp'
+          : 'created_without_load_support'
+        : 'created'
     };
   }
 
@@ -1203,6 +1208,7 @@ function formatAcpSessionStatus(resolution: AcpSessionResolution): string | unde
     case 'reused':
     case 'loaded':
     case 'created':
+    case 'created_with_mcp':
     case 'created_without_load_support':
       return undefined;
     case 'created_after_load_failed':
@@ -1222,6 +1228,7 @@ function sessionEventAction(source: AcpSessionResolution['source']): SessionEven
     case 'loaded':
       return 'load';
     case 'created':
+    case 'created_with_mcp':
       return 'new';
     case 'created_without_load_support':
       return 'new_without_load_support';
@@ -1241,6 +1248,8 @@ function sessionEventDetail(resolution: AcpSessionResolution): string | null {
         .join(' ');
     case 'created_without_load_support':
       return 'loadSession unsupported';
+    case 'created_with_mcp':
+      return 'fresh session required for MCP servers';
     default:
       return null;
   }
