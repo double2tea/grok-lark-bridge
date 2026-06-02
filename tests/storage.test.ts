@@ -101,7 +101,7 @@ describe('StateStore', () => {
       action: 'load',
       detail: null
     });
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
     store.pruneSessionEvents(1);
     expect(store.listRecentSessionEvents(1)).toEqual([]);
     store.close();
