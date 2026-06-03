@@ -254,6 +254,42 @@ describe('FeishuApi', () => {
     expect(asRecord(panelElements[0]).content).toContain('- 0508_肯德基鸡翅 PK');
   });
 
+  it('renders schema 2 action buttons without the unsupported action module', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 正在处理',
+      status: 'info',
+      body: [
+        '```grok_lark_card',
+        JSON.stringify({
+          type: 'report',
+          title: '处理中',
+          sections: [{ title: '明细', items: ['正在分析'], collapsed: true }]
+        }),
+        '```'
+      ].join('\n'),
+      actions: [
+        {
+          text: '停止',
+          type: 'danger',
+          value: { action: 'stop_run', context_key: 'chat_1' }
+        }
+      ]
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const body = asRecord(card.body);
+    const elements = asArray(body.elements);
+    const stopButton = asRecord(elements.at(-1));
+
+    expect(card.schema).toBe('2.0');
+    expect(stopButton.tag).toBe('button');
+    expect(asRecord(stopButton.text).content).toBe('停止');
+    expect(JSON.stringify(elements)).not.toContain('"tag":"action"');
+  });
+
   it('falls back to markdown when grok_lark_card JSON is invalid', async () => {
     const api = new TestFeishuApi();
 

@@ -339,7 +339,7 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
         template: cardTemplate(update.status)
       },
       body: {
-        elements: [processPanel, ...bodyElements, ...buildActions(update.actions ?? [])]
+        elements: [processPanel, ...bodyElements, ...buildSchema2Actions(update.actions ?? [])]
       }
     };
   }
@@ -353,7 +353,7 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
         template: cardTemplate(update.status)
       },
       body: {
-        elements: [...bodyElements, ...buildActions(update.actions ?? [])]
+        elements: [...bodyElements, ...buildSchema2Actions(update.actions ?? [])]
       }
     };
   }
@@ -891,6 +891,15 @@ function buildActions(actions: readonly CardAction[]): readonly Record<string, u
       }))
     }
   ];
+}
+
+function buildSchema2Actions(actions: readonly CardAction[]): readonly Record<string, unknown>[] {
+  return actions.map((action) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: action.text },
+    type: action.type ?? 'default',
+    value: action.value
+  }));
 }
 
 function cardTemplate(status: FeishuCardUpdate['status']): string {
