@@ -372,7 +372,7 @@ describe('RuntimeOrchestrator', () => {
     await waitFor(() => grok.prompts.length === 1);
     await orchestrator.handleMessage(message('/help', 'evt_help'));
 
-    expect(api.cards.some((card) => card.body.includes('常用命令可以直接点击'))).toBe(true);
+    expect(api.cards.some((card) => card.body.includes('可直接执行的命令在下方按钮里'))).toBe(true);
     expect(grok.prompts).toEqual(['第一条']);
   });
 
@@ -470,6 +470,28 @@ describe('RuntimeOrchestrator', () => {
     expect(api.texts).toEqual([]);
     expect(api.cards.at(-1)?.title).toBe('Bridge 诊断');
     expect(api.cards.at(-1)?.actions?.length).toBeGreaterThan(0);
+  });
+
+  it('separates clickable help actions from commands that need user input', async () => {
+    const api = new FakeFeishuApi();
+    const { orchestrator } = createRuntime(api);
+
+    await orchestrator.handleMessage(message('/help', 'evt_help_card'));
+
+    const card = api.cards.at(-1);
+    expect(card?.body).toContain('可直接执行的命令在下方按钮里。');
+    expect(card?.body).toContain('需要补充内容的命令请直接发送：');
+    expect(card?.body).not.toContain('/status');
+    expect(card?.body).not.toContain('/doctor');
+    expect(card?.actions?.map((action) => action.text)).toEqual([
+      '状态',
+      '新会话',
+      '工作目录',
+      'MCP 工具',
+      'MCP 权限',
+      '诊断',
+      '停止'
+    ]);
   });
 
   it('creates a replyable topic seed session with its own cwd', async () => {

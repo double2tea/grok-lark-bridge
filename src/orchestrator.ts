@@ -756,16 +756,28 @@ function buildHelpCard(contextKey: string): FeishuCardUpdate {
     title: 'Grok Lark Bridge',
     status: 'info',
     body: [
-      '常用命令可以直接点击下方按钮。',
+      '可直接执行的命令在下方按钮里。',
       '',
-      '新话题：标题，路径 /path',
-      '/topic <title> [路径 <path>]',
-      '/cd <path>',
-      '/workspace list|save|use|remove',
-      '/approval confirm_write|confirm_all|auto'
+      '需要补充内容的命令请直接发送：',
+      '- 新话题：标题，路径 /path',
+      '- /cd <path>',
+      '- /workspace save|use|remove <name>',
+      '- /approval confirm_write|confirm_all|auto'
     ].join('\n'),
-    actions: commandActions(contextKey)
+    actions: helpActions(contextKey)
   };
+}
+
+function helpActions(contextKey: string) {
+  return [
+    commandAction('状态', '/status', contextKey),
+    commandAction('新会话', '/new', contextKey),
+    commandAction('工作目录', '/workspace list', contextKey),
+    commandAction('MCP 工具', '/mcp tools', contextKey),
+    commandAction('MCP 权限', '/mcp scopes', contextKey),
+    commandAction('诊断', '/doctor', contextKey),
+    commandAction('停止', '/stop', contextKey, 'danger')
+  ];
 }
 
 function commandActions(contextKey: string) {
