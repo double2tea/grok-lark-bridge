@@ -80,6 +80,40 @@ describe('CommandRouter', () => {
     store.close();
   });
 
+  it('parses natural topic seed requests with broader Chinese prefixes (新建一个话题 etc)', () => {
+    const { router, message, session, store } = makeRouter();
+
+    // User's exact message style from Feishu
+    expect(
+      router.handle({ ...message, text: '新建一个话题，飞书相关的' }, session).topicSeed
+    ).toEqual({ title: '飞书相关的' });
+
+    expect(
+      router.handle({ ...message, text: '新建一个话题：飞书 OpenAPI 与 MCP' }, session).topicSeed
+    ).toEqual({ title: '飞书 OpenAPI 与 MCP' });
+
+    expect(router.handle({ ...message, text: '新建话题 集成测试' }, session).topicSeed).toEqual({
+      title: '集成测试'
+    });
+
+    expect(
+      router.handle({ ...message, text: '创建新话题：重构 bridge 飞书部分' }, session).topicSeed
+    ).toEqual({ title: '重构 bridge 飞书部分' });
+
+    // with path using Chinese comma separator
+    expect(
+      router.handle({ ...message, text: '新建一个话题，飞书相关，路径 /tmp/feishu-topic' }, session)
+        .topicSeed
+    ).toEqual({ title: '飞书相关', cwdInput: '/tmp/feishu-topic' });
+
+    // leading punct after prefix should be stripped
+    expect(
+      router.handle({ ...message, text: '新话题，，飞书话题清理' }, session).topicSeed
+    ).toEqual({ title: '飞书话题清理' });
+
+    store.close();
+  });
+
   it('adds quick switch actions to saved workspace listings', () => {
     const { router, message, session, store } = makeRouter();
     store.saveWorkspace('main', session.cwd);

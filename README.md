@@ -101,10 +101,12 @@ npm run setup:lark-mcp -- --config-only
 - `/mcp scopes`
 - `/doctor`
 
-也可以直接发送自然语言创建新话题种子消息：
+也可以直接发送自然语言创建新话题种子消息（支持“新话题”、“新建一个话题”、“创建新话题”等常见说法）：
 
 ```text
 新话题：重构 storage，路径 /Users/chacha/Documents/Grok Lark Bridge
+新建一个话题，飞书相关的
+创建新话题：添加 lark-mcp 搜索示例，路径 /tmp/demo
 ```
 
 机器人会发送一条种子消息。回复这条种子消息即可进入新的飞书话题，并自动使用独立 Grok 会话；直接在底部输入框发送仍会回到原会话。

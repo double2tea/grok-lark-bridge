@@ -255,7 +255,12 @@ function formatWorkspaceRow(
 
 function parseTopicSeedRequest(text: string): TopicSeedRequest | undefined {
   const trimmed = text.trim();
-  const match = /^(?:新话题|新任务)\s*[:：]?\s*(?<body>.*)$/u.exec(trimmed);
+  // Support common natural Chinese phrasings users type in Feishu for creating a new topic.
+  // Examples: "新话题：xxx", "新建一个话题，飞书相关的", "创建新话题: 集成"
+  const match =
+    /^(?:新话题|新任务|新建(?:一个)?话题|创建(?:一个|新)?话题|开(?:一个)?新话题)\s*[:：，,；;]?\s*(?<body>.*)$/u.exec(
+      trimmed
+    );
   if (!match?.groups) {
     return undefined;
   }
@@ -267,7 +272,10 @@ function parseSlashTopic(args: readonly string[]): TopicSeedRequest {
 }
 
 function parseTopicBody(body: string): TopicSeedRequest {
-  const trimmed = body.trim();
+  let trimmed = body.trim();
+  // Strip any leading punctuation users may have used as separator after the prefix
+  // e.g. "新建一个话题，飞书相关的" or "新话题：：标题"
+  trimmed = trimmed.replace(/^[，,；;：:\s]+/u, '').trim();
   if (!trimmed) {
     throw new Error('/topic requires a title');
   }
