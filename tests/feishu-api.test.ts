@@ -201,6 +201,41 @@ describe('FeishuApi', () => {
     expect(asRecord(elements[4]).content).toContain('**4. 下一步**');
   });
 
+  it('keeps ordinary numbered lists as plain markdown instead of report cards', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: ['1. 安装依赖', '2. 运行测试', '3. 提交代码'].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const elements = asArray(card.elements);
+
+    expect(card.schema).toBeUndefined();
+    expect(elements.map((element) => asRecord(element).content)).toEqual([
+      '1. 安装依赖\n2. 运行测试\n3. 提交代码'
+    ]);
+  });
+
+  it('does not split hyphen separators inside code blocks', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: ['```bash', 'npm run build -- --flag - value', '```'].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const elements = asArray(card.elements);
+
+    expect(asRecord(elements[0]).content).toBe('```bash\nnpm run build -- --flag - value\n```');
+  });
+
   it('sends card replies in the source thread', async () => {
     const api = new TestFeishuApi();
 

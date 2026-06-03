@@ -369,7 +369,7 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
 
 function buildBodyElements(body: string): readonly Record<string, unknown>[] {
   const normalized = normalizeMarkdownBody(truncate(sanitizeForCard(body), 8000));
-  const reportElements = buildReportElements(normalized);
+  const reportElements = buildReportElements(normalizeReportBody(normalized));
   if (reportElements.length > 0) {
     return reportElements;
   }
@@ -445,26 +445,134 @@ function splitMarkdownBody(body: string): readonly string[] {
 }
 
 function normalizeMarkdownBody(body: string): string {
-  const normalizedHeadings = body
+  return body
     .replace(/\r\n?/gu, '\n')
     .replace(/([^\n#])[^\S\n]*(#{1,6})(?=\S)/gu, '$1\n\n$2')
     .replace(/^(#{1,6})([^#\s])/gmu, '$1 $2')
     .trim();
-  return insertInlineReportBreaks(normalizedHeadings).trim();
 }
 
-function insertInlineReportBreaks(body: string): string {
-  return body
-    .split('\n')
-    .map((line) => {
-      if (line.trimStart().startsWith('#')) {
-        return line;
-      }
-      return line
-        .replace(/([^\n])\s+(\d{1,2}[.、]\s+\S)/gu, '$1\n\n$2')
-        .replace(/\s+-\s+/gu, '\n- ');
-    })
-    .join('\n');
+function normalizeReportBody(body: string): string {
+  const lines: string[] = [];
+  let inCodeBlock = false;
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      lines.push(line);
+      continue;
+    }
+    if (inCodeBlock || line.trimStart().startsWith('#')) {
+      lines.push(line);
+      continue;
+    }
+    lines.push(
+      line.replace(/([^\n])\s+(\d{1,2}[.、]\s+\S)/gu, '$1\n\n$2').replace(/\s+-\s+/gu, '\n- ')
+    );
+  }
+  return lines.join('\n').trim();
+}
+
+function parseReportSections(body: string): readonly ReportSection[] {
+  const sections: ReportSection[] = [];
+  let currentTitle = '';
+  let currentLines: string[] = [];
+  let inCodeBlock = false;
+
+  const flush = (): void => {
+    const content = currentLines.join('\n').trim();
+    if (currentTitle || content) {
+      sections.push({ title: currentTitle, content });
+    }
+    currentLines = [];
+  };
+
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      currentLines.push(line);
+      continue;
+    }
+    const sectionStart = inCodeBlock ? null : parseSectionStart(line);
+    if (sectionStart) {
+      flush();
+      currentTitle = sectionStart.title;
+      currentLines = sectionStart.rest ? [sectionStart.rest] : [];
+      continue;
+    }
+    currentLines.push(line);
+  }
+  flush();
+  return sections.filter((section) => section.title || section.content);
+}
+
+function isReportLike(sections: readonly ReportSection[]): boolean {
+  const titledSections = sections.filter((section) => section.title);
+  if (titledSections.length < 2) {
+    return false;
+  }
+  return titledSections.some((section) => {
+    if (isPriorityReportSection(section.title)) {
+      return true;
+    }
+    if (/明细|字段|记录|列表|日志|原始|过程|结构|数据分析/u.test(section.title)) {
+      return true;
+    }
+    return section.content.length > 700;
+  });
+}
+
+function buildReportElements(body: string): readonly Record<string, unknown>[] {
+  const sections = parseReportSections(body);
+  if (!isReportLike(sections)) {
+    return [];
+  }
+
+  const elements: Record<string, unknown>[] = [];
+  for (const section of sections) {
+    if (section.title === '') {
+      elements.push(...markdownElements(section.content));
+      continue;
+    }
+    if (shouldCollapseReportSection(section)) {
+      elements.push(buildCollapsibleMarkdownPanel(section.title, section.content));
+      continue;
+    }
+    elements.push(...markdownElements(`**${section.title}**\n${section.content}`.trim()));
+  }
+  return elements;
+}
+
+function parseSectionStart(line: string): { readonly title: string; readonly rest: string } | null {
+  const trimmed = line.trim();
+  const heading = /^(#{1,6})\s+(.+)$/u.exec(trimmed);
+  if (heading) {
+    return { title: heading[2].trim(), rest: '' };
+  }
+
+  const numbered = /^(\d{1,2}[.、])\s*(.+)$/u.exec(trimmed);
+  if (!numbered) {
+    return null;
+  }
+
+  const raw = `${numbered[1]} ${numbered[2]}`.trim();
+  const split = splitNumberedSection(raw);
+  return { title: split.title, rest: split.rest };
+}
+
+function splitNumberedSection(line: string): { readonly title: string; readonly rest: string } {
+  const separators = [' - ', '：', ':'];
+  for (const separator of separators) {
+    const index = line.indexOf(separator);
+    if (index > 8 && index < 80) {
+      return {
+        title: line.slice(0, index).trim(),
+        rest: line.slice(index + separator.length).trim()
+      };
+    }
+  }
+  return { title: line, rest: '' };
 }
 
 function isMarkdownHeading(line: string): boolean {
@@ -504,85 +612,6 @@ function splitLongMarkdownBlock(content: string, maxLength: number): readonly st
 interface ReportSection {
   readonly title: string;
   readonly content: string;
-}
-
-function buildReportElements(body: string): readonly Record<string, unknown>[] {
-  const sections = parseReportSections(body);
-  if (sections.filter((section) => section.title).length < 2) {
-    return [];
-  }
-
-  const elements: Record<string, unknown>[] = [];
-  for (const section of sections) {
-    if (section.title === '') {
-      elements.push(...markdownElements(section.content));
-      continue;
-    }
-    if (shouldCollapseReportSection(section)) {
-      elements.push(buildCollapsibleMarkdownPanel(section.title, section.content));
-      continue;
-    }
-    elements.push(...markdownElements(`**${section.title}**\n${section.content}`.trim()));
-  }
-  return elements;
-}
-
-function parseReportSections(body: string): readonly ReportSection[] {
-  const sections: ReportSection[] = [];
-  let currentTitle = '';
-  let currentLines: string[] = [];
-
-  const flush = (): void => {
-    const content = currentLines.join('\n').trim();
-    if (currentTitle || content) {
-      sections.push({ title: currentTitle, content });
-    }
-    currentLines = [];
-  };
-
-  for (const line of body.split('\n')) {
-    const sectionStart = parseSectionStart(line);
-    if (sectionStart) {
-      flush();
-      currentTitle = sectionStart.title;
-      currentLines = sectionStart.rest ? [sectionStart.rest] : [];
-      continue;
-    }
-    currentLines.push(line);
-  }
-  flush();
-  return sections.filter((section) => section.title || section.content);
-}
-
-function parseSectionStart(line: string): { readonly title: string; readonly rest: string } | null {
-  const trimmed = line.trim();
-  const heading = /^(#{1,6})\s+(.+)$/u.exec(trimmed);
-  if (heading) {
-    return { title: heading[2].trim(), rest: '' };
-  }
-
-  const numbered = /^(\d{1,2}[.、])\s*(.+)$/u.exec(trimmed);
-  if (!numbered) {
-    return null;
-  }
-
-  const raw = `${numbered[1]} ${numbered[2]}`.trim();
-  const split = splitNumberedSection(raw);
-  return { title: split.title, rest: split.rest };
-}
-
-function splitNumberedSection(line: string): { readonly title: string; readonly rest: string } {
-  const separators = [' - ', '：', ':'];
-  for (const separator of separators) {
-    const index = line.indexOf(separator);
-    if (index > 8 && index < 80) {
-      return {
-        title: line.slice(0, index).trim(),
-        rest: line.slice(index + separator.length).trim()
-      };
-    }
-  }
-  return { title: line, rest: '' };
 }
 
 function shouldCollapseReportSection(section: ReportSection): boolean {
