@@ -216,7 +216,12 @@ describe('FeishuApi', () => {
           sections: [
             {
               title: '关键发现',
-              items: ['报价 113k，已收 59k，待收 54k', '2026 项目仍有报价缺口'],
+              items: [
+                { kind: 'tool', text: 'lark-mcp: bitable_v1_appTableRecord_search' },
+                { kind: 'service', text: 'bridge: Feishu WebSocket long connection' },
+                '报价 113k，已收 59k，待收 54k'
+              ],
+              code_blocks: [{ language: 'bash', code: 'npm run setup:lark-mcp' }],
               collapsed: false
             },
             {
@@ -243,6 +248,9 @@ describe('FeishuApi', () => {
     expect(asRecord(elements[0]).content).toBe('**剪辑表格分析**');
     expect(asRecord(elements[1]).content).toContain('**摘要**');
     expect(asRecord(elements[2]).content).toContain('**关键发现**');
+    expect(asRecord(elements[2]).content).toContain("<text_tag color='blue'>工具</text_tag>");
+    expect(asRecord(elements[2]).content).toContain("<text_tag color='purple'>服务</text_tag>");
+    expect(asRecord(elements[2]).content).toContain('```bash\nnpm run setup:lark-mcp\n```');
 
     const detailPanel = asRecord(elements[3]);
     const header = asRecord(detailPanel.header);

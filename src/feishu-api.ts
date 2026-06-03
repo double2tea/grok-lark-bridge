@@ -658,9 +658,30 @@ interface StructuredCardReport {
 interface StructuredCardSection {
   readonly title: string;
   readonly text: string;
-  readonly items: readonly string[];
+  readonly items: readonly StructuredCardItem[];
+  readonly codeBlocks: readonly StructuredCardCodeBlock[];
   readonly collapsed: boolean;
 }
+
+interface StructuredCardItem {
+  readonly kind: StructuredCardItemKind;
+  readonly text: string;
+}
+
+interface StructuredCardCodeBlock {
+  readonly language: string;
+  readonly code: string;
+}
+
+type StructuredCardItemKind =
+  | 'text'
+  | 'tool'
+  | 'command'
+  | 'service'
+  | 'file'
+  | 'permission'
+  | 'data'
+  | 'note';
 
 function buildStructuredCardElements(body: string): readonly Record<string, unknown>[] {
   const report = parseStructuredCardReport(body);
@@ -722,11 +743,78 @@ function readStructuredCardSections(value: unknown): readonly StructuredCardSect
       {
         title,
         text: readString(item.text),
-        items: readStringList(item.items),
+        items: readStructuredCardItems(item.items),
+        codeBlocks: readStructuredCardCodeBlocks(item.code_blocks),
         collapsed: item.collapsed === true
       }
     ];
   });
+}
+
+function readStructuredCardCodeBlocks(value: unknown): readonly StructuredCardCodeBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): readonly StructuredCardCodeBlock[] => {
+    if (!isRecordValue(item)) {
+      return [];
+    }
+
+    const code = readCodeBlockText(item.code);
+    if (!code) {
+      return [];
+    }
+    return [{ language: readCodeBlockLanguage(item.language), code }];
+  });
+}
+
+function readCodeBlockText(value: unknown): string {
+  return typeof value === 'string' ? truncate(sanitizeForCard(value), 4000).trim() : '';
+}
+
+function readCodeBlockLanguage(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  return value.replace(/[^\w+-]/gu, '').slice(0, 24);
+}
+
+function readStructuredCardItems(value: unknown): readonly StructuredCardItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): readonly StructuredCardItem[] => {
+    if (typeof item === 'string') {
+      const text = cleanStructuredText(item);
+      return text ? [{ kind: 'text', text }] : [];
+    }
+    if (!isRecordValue(item)) {
+      return [];
+    }
+
+    const text = readString(item.text);
+    if (!text) {
+      return [];
+    }
+    return [{ kind: readStructuredCardItemKind(item.kind), text }];
+  });
+}
+
+function readStructuredCardItemKind(value: unknown): StructuredCardItemKind {
+  if (
+    value === 'tool' ||
+    value === 'command' ||
+    value === 'service' ||
+    value === 'file' ||
+    value === 'permission' ||
+    value === 'data' ||
+    value === 'note'
+  ) {
+    return value;
+  }
+  return 'text';
 }
 
 function readStringList(value: unknown): readonly string[] {
@@ -778,7 +866,7 @@ function renderStructuredCardReport(
 }
 
 function structuredSectionContent(section: StructuredCardSection): string {
-  return [section.text, toMarkdownList(section.items)]
+  return [section.text, toStructuredItemList(section.items), toCodeBlocks(section.codeBlocks)]
     .filter((part) => part)
     .join('\n')
     .trim();
@@ -789,6 +877,35 @@ function toMarkdownList(items: readonly string[]): string {
     .filter((item) => item)
     .map((item) => `- ${item}`)
     .join('\n');
+}
+
+function toStructuredItemList(items: readonly StructuredCardItem[]): string {
+  return items.map((item) => `- ${structuredItemPrefix(item.kind)}${item.text}`).join('\n');
+}
+
+function structuredItemPrefix(kind: StructuredCardItemKind): string {
+  switch (kind) {
+    case 'tool':
+      return "<text_tag color='blue'>工具</text_tag> ";
+    case 'command':
+      return "<text_tag color='orange'>命令</text_tag> ";
+    case 'service':
+      return "<text_tag color='purple'>服务</text_tag> ";
+    case 'file':
+      return "<text_tag color='green'>文件</text_tag> ";
+    case 'permission':
+      return "<text_tag color='red'>权限</text_tag> ";
+    case 'data':
+      return "<text_tag color='yellow'>数据</text_tag> ";
+    case 'note':
+      return "<text_tag color='grey'>说明</text_tag> ";
+    case 'text':
+      return '';
+  }
+}
+
+function toCodeBlocks(codeBlocks: readonly StructuredCardCodeBlock[]): string {
+  return codeBlocks.map((block) => `\`\`\`${block.language}\n${block.code}\n\`\`\``).join('\n\n');
 }
 
 function shouldCollapseReportSection(section: ReportSection): boolean {
