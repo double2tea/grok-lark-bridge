@@ -236,6 +236,32 @@ describe('FeishuApi', () => {
     expect(asRecord(elements[0]).content).toBe('```bash\nnpm run build -- --flag - value\n```');
   });
 
+  it('rescues dense inline Chinese report labels into structured sections', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: [
+        '今年收入分析：已根据剪辑表格计算。',
+        '其他 2026 相关：2026_肯德基 7月 OK 餐 OTV（待报价，交片≈2026-06-08，start≈2026-05-10）；0526_肯德基小龙虾堡 x 大圣崛起（待报价，start≈2026-05-10）；0530_肯德基/星惠系列（进行中，暂无报价）。看板“今年收款”小计：已收7,000（1项），预计待收11,000。总体管道（所有年份）：报价113k，已收59k，待收54k。下一步1.尽快为待报价项目完成报价并更新台账/看板。2.跟进当前待收款项目。3.刷新财务趋势表加入2026年数据。'
+      ].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const body = asRecord(card.body);
+    const elements = asArray(body.elements);
+    const renderedText = JSON.stringify(elements);
+
+    expect(card.schema).toBe('2.0');
+    expect(renderedText).toContain('其他 2026 相关');
+    expect(renderedText).toContain('看板“今年收款”小计');
+    expect(renderedText).toContain('总体管道（所有年份）');
+    expect(renderedText).toContain('下一步');
+    expect(renderedText).toContain('1.尽快为待报价项目完成报价');
+  });
+
   it('sends card replies in the source thread', async () => {
     const api = new TestFeishuApi();
 

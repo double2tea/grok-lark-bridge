@@ -467,10 +467,21 @@ function normalizeReportBody(body: string): string {
       continue;
     }
     lines.push(
-      line.replace(/([^\n])\s+(\d{1,2}[.、]\s+\S)/gu, '$1\n\n$2').replace(/\s+-\s+/gu, '\n- ')
+      insertInlineLabelBreaks(line)
+        .replace(/([^\n])\s+(\d{1,2}[.、]\s+\S)/gu, '$1\n\n$2')
+        .replace(/\s+-\s+/gu, '\n- ')
     );
   }
   return lines.join('\n').trim();
+}
+
+function insertInlineLabelBreaks(line: string): string {
+  return line
+    .replace(/([。；;])\s*(下一步)(?=\d{1,2}[.、])/gu, '$1\n\n$2')
+    .replace(
+      /([。；;])\s*([^：:\n]{0,24}(?:结论|摘要|关键发现|风险|异常|建议|下一步|明细|字段|记录|列表|日志|原始|过程|结构|数据分析|小计|总体|管道|看板|相关)[^：:\n]{0,24}[：:])/gu,
+      '$1\n\n$2'
+    );
 }
 
 function parseReportSections(body: string): readonly ReportSection[] {
@@ -551,6 +562,16 @@ function parseSectionStart(line: string): { readonly title: string; readonly res
     return { title: heading[2].trim(), rest: '' };
   }
 
+  const labeled = /^([^：:\n]{2,50})[：:]\s*(.*)$/u.exec(trimmed);
+  if (labeled && isReportLabel(labeled[1])) {
+    return { title: labeled[1].trim(), rest: labeled[2].trim() };
+  }
+
+  const nextSteps = /^(下一步)(\d{1,2}[.、]\s*.+)$/u.exec(trimmed);
+  if (nextSteps) {
+    return { title: nextSteps[1], rest: nextSteps[2] };
+  }
+
   const numbered = /^(\d{1,2}[.、])\s*(.+)$/u.exec(trimmed);
   if (!numbered) {
     return null;
@@ -573,6 +594,12 @@ function splitNumberedSection(line: string): { readonly title: string; readonly 
     }
   }
   return { title: line, rest: '' };
+}
+
+function isReportLabel(label: string): boolean {
+  return /结论|摘要|关键发现|风险|异常|建议|下一步|明细|字段|记录|列表|日志|原始|过程|结构|数据分析|小计|总体|管道|看板|相关/u.test(
+    label
+  );
 }
 
 function isMarkdownHeading(line: string): boolean {
@@ -620,12 +647,12 @@ function shouldCollapseReportSection(section: ReportSection): boolean {
   }
   return (
     section.content.length > 700 ||
-    /明细|字段|记录|列表|日志|原始|过程|结构|数据分析/u.test(section.title)
+    /明细|字段|记录|列表|日志|原始|过程|结构|数据分析|小计|总体|管道|看板|相关/u.test(section.title)
   );
 }
 
 function isPriorityReportSection(title: string): boolean {
-  return /结论|摘要|关键发现|风险|异常|建议|下一步/u.test(title);
+  return /结论|摘要|关键发现|风险|异常|建议|下一步|小计|总体/u.test(title);
 }
 
 function markdownElements(content: string): readonly Record<string, unknown>[] {
