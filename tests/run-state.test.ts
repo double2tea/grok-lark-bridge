@@ -2,6 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { initialState, reduce, toCardBody } from '../src/card/run-state.js';
 
 describe('run state card body', () => {
+  it('shows a waiting message before the first useful Grok output', () => {
+    expect(toCardBody(initialState)).toBe('正在等待 Grok 输出。');
+  });
+
+  it('keeps the empty output marker for completed runs without content', () => {
+    expect(toCardBody({ blocks: [], footer: null, terminal: 'done' })).toBe('（无输出）');
+  });
+
   it('merges streamed text chunks into one natural line', () => {
     const state = ['你', '好', '！'].reduce(
       (current, text) => reduce(current, { type: 'text', text }),

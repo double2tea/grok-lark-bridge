@@ -256,6 +256,16 @@ export function toCardBody(state: RunState, maxLength = 8000): string {
 
   let body = lines.join('\n');
 
+  if (!body && state.terminal === 'running') {
+    if (state.footer === 'tool_running') {
+      return '正在执行工具...';
+    }
+    if (state.footer === 'waiting_approval') {
+      return '等待飞书审批...';
+    }
+    return '正在等待 Grok 输出。';
+  }
+
   if (state.footer === 'thinking') {
     body += body ? '\n\n_思考中..._' : '_思考中..._';
   } else if (state.footer === 'tool_running') {
