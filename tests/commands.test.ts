@@ -28,6 +28,22 @@ describe('CommandRouter', () => {
     store.close();
   });
 
+  it('reports lark-cli status', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-lark-cli-'));
+    dirs.push(dir);
+    const fakeLarkCli = path.join(dir, 'lark-cli.mjs');
+    fs.writeFileSync(fakeLarkCli, fakeLarkCliScript(), 'utf8');
+    fs.chmodSync(fakeLarkCli, 0o755);
+    const { router, message, session, store } = makeRouter(['ou_admin'], fakeLarkCli);
+
+    const result = router.handle({ ...message, text: '/lark status' }, session);
+
+    expect(result.text).toContain('lark-cli: available');
+    expect(result.text).toContain('version: lark-cli version test');
+    expect(result.text).toContain('auth: identity=user');
+    store.close();
+  });
+
   it('changes approval policy for admins', () => {
     const { router, message, session, store } = makeRouter();
 
@@ -172,7 +188,10 @@ describe('CommandRouter', () => {
   });
 });
 
-function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
+function makeRouter(
+  adminOpenIds: readonly string[] = ['ou_admin'],
+  larkCliBin = process.execPath
+): {
   readonly router: CommandRouter;
   readonly message: IncomingMessage;
   readonly session: SessionRecord;
@@ -185,6 +204,7 @@ function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
     feishuAppId: 'cli_x',
     feishuAppSecret: 'secret',
     grokBin: 'grok',
+    larkCliBin,
     dataDir: dir,
     defaultWorkspaceRoot: dir,
     access: {
@@ -216,4 +236,19 @@ function makeRouter(adminOpenIds: readonly string[] = ['ou_admin']): {
     session,
     store
   };
+}
+
+function fakeLarkCliScript(): string {
+  return `#!/usr/bin/env node
+if (process.argv.includes('--version')) {
+  process.stdout.write('lark-cli version test\\n');
+  process.exit(0);
+}
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  process.stdout.write('{"identity":"user"}\\n');
+  process.exit(0);
+}
+process.stderr.write('unexpected args: ' + process.argv.slice(2).join(' '));
+process.exit(1);
+`;
 }

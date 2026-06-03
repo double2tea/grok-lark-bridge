@@ -116,6 +116,7 @@ export class GrokAcpBackend implements GrokBackend {
 
   constructor(
     private readonly grokBin: string,
+    private readonly larkCliBin: string,
     private readonly projectRoot = process.cwd(),
     private readonly bindNativeSession?: NativeSessionBinder,
     private readonly recordNativeSessionEvent?: NativeSessionEventRecorder
@@ -179,7 +180,7 @@ export class GrokAcpBackend implements GrokBackend {
             'session/prompt',
             {
               sessionId: activeSession.acpSessionId,
-              prompt: [{ type: 'text', text: buildPrompt(input) }]
+              prompt: [{ type: 'text', text: buildPrompt(input, this.larkCliBin) }]
             },
             acpPromptTimeoutMs
           )
@@ -254,7 +255,7 @@ export class GrokAcpBackend implements GrokBackend {
       }
     });
     this.supportsLoadSession = supportsAcpLoadSession(init);
-    this.mcpServers = selectSessionMcpServers(init);
+    this.mcpServers = [];
     const methodId = chooseAuthMethod(init);
     await this.request('authenticate', { methodId, _meta: { headless: true } });
   }
@@ -604,14 +605,17 @@ export class GrokAcpBackend implements GrokBackend {
 }
 
 export class GrokCliBackend implements GrokBackend {
-  constructor(private readonly grokBin: string) {}
+  constructor(
+    private readonly grokBin: string,
+    private readonly larkCliBin = 'lark-cli'
+  ) {}
 
   async run(
     input: GrokRunInput,
     onEvent: (event: GrokEvent) => Promise<void>,
     signal: AbortSignal
   ): Promise<number> {
-    const prompt = buildPrompt(input);
+    const prompt = buildPrompt(input, this.larkCliBin);
     const child = spawn(
       this.grokBin,
       [
@@ -1279,51 +1283,6 @@ function chooseAuthMethod(init: Record<string, unknown>): string {
   throw new Error('Run `grok login` first, or set XAI_API_KEY.');
 }
 
-function selectSessionMcpServers(init: Record<string, unknown>): readonly AcpMcpServer[] {
-  const meta = init._meta;
-  if (!isRecord(meta) || !Array.isArray(meta.mcpServers)) {
-    return [];
-  }
-  return meta.mcpServers
-    .map(readAcpMcpServer)
-    .filter((server): server is AcpMcpServer => server?.name === 'lark-mcp');
-}
-
-function readAcpMcpServer(value: unknown): AcpMcpServer | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const name = readString(value, 'name');
-  const type = readString(value, 'type');
-  const command = readString(value, 'command');
-  const args = readStringArray(value.args) ?? [];
-  if (!name || type !== 'stdio' || !command) {
-    return undefined;
-  }
-  return {
-    name,
-    type,
-    command,
-    args,
-    env: readAcpMcpEnvArray(value.env)
-  };
-}
-
-function readAcpMcpEnvArray(value: unknown): readonly AcpMcpEnv[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value.map((entry) => {
-    const record = expectRecord(entry, 'mcp server env entry');
-    const name = readString(record, 'name');
-    const envValue = readString(record, 'value');
-    if (!name || envValue === undefined) {
-      throw new Error('mcp server env entries require name and value');
-    }
-    return { name, value: envValue };
-  });
-}
-
 function readJsonRpcId(record: Record<string, unknown>, key: string): JsonRpcId | undefined {
   const value = record[key];
   return typeof value === 'number' || typeof value === 'string' ? value : undefined;
@@ -1421,15 +1380,18 @@ function toOptionalRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
-function buildPrompt(input: GrokRunInput): string {
+function buildPrompt(input: GrokRunInput, larkCliBin: string): string {
   return [
     'You are running behind Grok Lark Bridge.',
     `Feishu context_key: ${input.contextKey}`,
     `Feishu requested_by_open_id: ${input.requestedByOpenId}`,
     'For ordinary chat replies, return assistant text normally; the bridge will send it to Feishu.',
     'Do not call a bridge-local Feishu MCP server; this bridge exposes zero local MCP tools.',
-    'For general Feishu OpenAPI work such as docs, wiki, bitable, search, calendar or contact operations, prefer the official Lark/Feishu OpenAPI MCP server when it is available.',
-    'When the user asks for Feishu Drive, cloud docs, wiki, or bitable content without a link or token, first search visible docs with the official search tool using the user wording or clear keywords.',
+    `For general Feishu OpenAPI work, use the local Lark CLI through terminal commands: ${larkCliBin}`,
+    'Quote the Lark CLI path in shell commands if it contains spaces or special characters.',
+    'Use lark-cli with --format json and --as user for user-visible resources; use --as bot only for bot identity operations.',
+    'Prefer lark-cli commands over official lark-mcp tools. Do not call lark-mcp tools unless the user explicitly asks for MCP debugging.',
+    'When the user asks for Feishu Drive, cloud docs, wiki, or bitable content without a link or token, first search visible docs using lark-cli docs/wiki/base/drive/search commands or lark-cli api with search:docs.',
     'If search returns one strong match, continue with that document; if it returns multiple plausible matches, ask the user to choose from concise candidates.',
     'Do not claim Feishu Drive root browsing is available unless a concrete exposed tool supports it; use search and token-based read tools instead.',
     'For Feishu permission errors, answer with the missing scope names and the next authorization step, not a long diagnostic report.',

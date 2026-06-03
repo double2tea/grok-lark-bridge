@@ -11,6 +11,7 @@ afterEach(() => {
   delete process.env.FEISHU_ENCRYPT_KEY;
   delete process.env.FEISHU_VERIFICATION_TOKEN;
   delete process.env.GROK_BIN;
+  delete process.env.LARK_CLI_BIN;
   delete process.env.DATA_DIR;
   delete process.env.DEFAULT_WORKSPACE_ROOT;
   for (const dir of dirs.splice(0)) {
@@ -44,12 +45,14 @@ describe('config', () => {
     );
     process.env.FEISHU_APP_ID = 'cli_env';
     process.env.FEISHU_APP_SECRET = 'secret_env';
+    process.env.LARK_CLI_BIN = '~/bin/lark-cli';
     process.env.DATA_DIR = localRoot;
 
     const config = loadConfig(projectRoot);
 
     expect(config.feishuAppId).toBe('cli_env');
     expect(config.feishuAppSecret).toBe('secret_env');
+    expect(config.larkCliBin).toBe(path.join(os.homedir(), 'bin', 'lark-cli'));
     expect(config.dataDir).toBe(localRoot);
     expect(config.access.defaultApprovalPolicy).toBe('auto');
   });

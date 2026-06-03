@@ -441,7 +441,7 @@ describe('ACP client methods', () => {
 
     const previousFile = process.env.FAKE_ACP_FILE;
     process.env.FAKE_ACP_FILE = file;
-    const backend = new GrokAcpBackend(fakeGrok, dir);
+    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir);
     const events: GrokEvent[] = [];
     try {
       const code = await backend.run(
@@ -477,7 +477,7 @@ describe('ACP client methods', () => {
     await fs.writeFile(fakeGrok, fakeGrokPromptPolicyScript(), 'utf8');
     await fs.chmod(fakeGrok, 0o755);
 
-    const backend = new GrokAcpBackend(fakeGrok, dir);
+    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir);
     const events: GrokEvent[] = [];
     try {
       const code = await backend.run(
@@ -509,7 +509,7 @@ describe('ACP client methods', () => {
     await fs.chmod(fakeGrok, 0o755);
 
     const sessionEvents: string[] = [];
-    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir, undefined, (event) => {
       sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
     });
     const events: GrokEvent[] = [];
@@ -544,14 +544,14 @@ describe('ACP client methods', () => {
     }
   });
 
-  it('creates a fresh native ACP session instead of loading stale sessions when Lark MCP is configured', async () => {
+  it('loads a persisted native ACP session even when Grok advertises Lark MCP', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-mcp-'));
     const fakeGrok = path.join(dir, 'fake-grok-load-mcp.mjs');
     await fs.writeFile(fakeGrok, fakeGrokLoadScript(), 'utf8');
     await fs.chmod(fakeGrok, 0o755);
 
     const sessionEvents: string[] = [];
-    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir, undefined, (event) => {
       sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
     });
     const events: GrokEvent[] = [];
@@ -573,8 +573,8 @@ describe('ACP client methods', () => {
       );
 
       expect(code).toBe(0);
-      expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_new' });
-      expect(sessionEvents).toEqual(['new:sess_new:fresh session required for MCP servers']);
+      expect(events).toContainEqual({ type: 'text', text: 'prompt:sess_existing' });
+      expect(sessionEvents).toEqual(['load:sess_existing:']);
     } finally {
       backend.close();
     }
@@ -587,7 +587,7 @@ describe('ACP client methods', () => {
     await fs.chmod(fakeGrok, 0o755);
 
     const sessionEvents: string[] = [];
-    const backend = new GrokAcpBackend(fakeGrok, dir, undefined, (event) => {
+    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir, undefined, (event) => {
       sessionEvents.push(`${event.action}:${event.nativeSessionId ?? ''}:${event.detail ?? ''}`);
     });
     const events: GrokEvent[] = [];
@@ -636,11 +636,8 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
-function hasOnlyLarkMcp(servers) {
-  return Array.isArray(servers) &&
-    servers.length === 1 &&
-    servers[0].name === 'lark-mcp' &&
-    Array.isArray(servers[0].env);
+function hasNoMcp(servers) {
+  return Array.isArray(servers) && servers.length === 0;
 }
 
 rl.on('line', (line) => {
@@ -666,8 +663,8 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/new') {
-    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
       return;
     }
     send({ id: message.id, result: { sessionId: 'sess_test' } });
@@ -757,10 +754,11 @@ rl.on('line', (line) => {
   if (message.method === 'session/prompt') {
     const prompt = message.params.prompt[0].text;
     const hasSearchFirstPolicy = prompt.includes('first search visible docs');
+    const hasLarkCliPolicy = prompt.includes('Prefer lark-cli commands over official lark-mcp tools');
     const hasChoicePolicy = prompt.includes('ask the user to choose from concise candidates');
     const hasReportPolicy = prompt.includes('grok_lark_card JSON block');
     const hasOldIdentifierPolicy = prompt.includes('ask for that identifier instead of guessing');
-    const text = hasSearchFirstPolicy && hasChoicePolicy && hasReportPolicy && !hasOldIdentifierPolicy
+    const text = hasSearchFirstPolicy && hasLarkCliPolicy && hasChoicePolicy && hasReportPolicy && !hasOldIdentifierPolicy
       ? 'prompt-policy-ok'
       : 'prompt-policy-fail';
     send({
@@ -791,11 +789,8 @@ function send(message) {
   process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
 }
 
-function hasOnlyLarkMcp(servers) {
-  return Array.isArray(servers) &&
-    servers.length === 1 &&
-    servers[0].name === 'lark-mcp' &&
-    Array.isArray(servers[0].env);
+function hasNoMcp(servers) {
+  return Array.isArray(servers) && servers.length === 0;
 }
 
 rl.on('line', (line) => {
@@ -822,12 +817,17 @@ rl.on('line', (line) => {
     return;
   }
   if (message.method === 'session/load') {
-    send({ id: message.id, error: { code: -32000, message: 'unexpected load session' } });
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
+      return;
+    }
+    activeSessionId = message.params.sessionId;
+    send({ id: message.id, result: null });
     return;
   }
   if (message.method === 'session/new') {
-    if (!hasOnlyLarkMcp(message.params.mcpServers)) {
-      send({ id: message.id, error: { code: -32602, message: 'missing lark mcp' } });
+    if (!hasNoMcp(message.params.mcpServers)) {
+      send({ id: message.id, error: { code: -32602, message: 'unexpected mcp servers' } });
       return;
     }
     activeSessionId = 'sess_new';

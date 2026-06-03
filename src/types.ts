@@ -19,6 +19,7 @@ export interface BridgeConfig {
   readonly feishuEncryptKey?: string;
   readonly feishuVerificationToken?: string;
   readonly grokBin: string;
+  readonly larkCliBin: string;
   readonly dataDir: string;
   readonly defaultWorkspaceRoot: string;
   readonly access: AccessConfig;
@@ -51,6 +52,7 @@ export interface LocalConfig {
   readonly feishuEncryptKey?: string;
   readonly feishuVerificationToken?: string;
   readonly grokBin?: string;
+  readonly larkCliBin?: string;
   readonly dataDir?: string;
   readonly defaultWorkspaceRoot?: string;
 }

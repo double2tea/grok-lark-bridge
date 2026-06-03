@@ -618,6 +618,7 @@ function createRuntime(
     feishuAppId: 'app',
     feishuAppSecret: 'secret',
     grokBin: 'grok',
+    larkCliBin: 'lark-cli',
     dataDir: dir,
     defaultWorkspaceRoot: '/tmp',
     access: {

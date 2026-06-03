@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { checkGrok, runDoctor } from './health.js';
+import { checkLarkCli } from './lark-cli.js';
 import { missingToolScopes, enabledTools } from './permissions.js';
 import { SessionService } from './session.js';
 import { StateStore } from './storage.js';
@@ -55,6 +56,7 @@ export class CommandRouter {
             '/cd <path>',
             '/workspace list|save|use|remove',
             '/approval confirm_write|confirm_all|auto',
+            '/lark status',
             '/mcp tools',
             '/mcp scopes',
             '/doctor'
@@ -69,7 +71,8 @@ export class CommandRouter {
             `run: ${session.runStatus}`,
             `approval: ${session.approvalPolicy}`,
             `sender open_id: ${message.senderOpenId}`,
-            `grok: ${checkGrok(this.config.grokBin)}`
+            `grok: ${checkGrok(this.config.grokBin)}`,
+            `lark-cli: ${formatLarkCliStatus(checkLarkCli(this.config.larkCliBin))}`
           ].join('\n')
         };
       case '/new':
@@ -89,6 +92,8 @@ export class CommandRouter {
         return this.handleWorkspace(session, args);
       case '/approval':
         return this.handleApproval(message, session, args);
+      case '/lark':
+        return this.handleLark(args);
       case '/mcp':
         return this.handleMcp(args);
       case '/doctor':
@@ -202,6 +207,26 @@ export class CommandRouter {
     }
     throw new Error('/mcp requires tools|scopes');
   }
+
+  private handleLark(args: readonly string[]): CommandResult {
+    const [action] = args;
+    if (action === 'status') {
+      const status = checkLarkCli(this.config.larkCliBin);
+      return {
+        handled: true,
+        text: [
+          `lark-cli: ${status.available ? 'available' : 'unavailable'}`,
+          `version: ${status.version}`,
+          `auth: ${status.auth}`
+        ].join('\n')
+      };
+    }
+    throw new Error('/lark requires status');
+  }
+}
+
+function formatLarkCliStatus(status: ReturnType<typeof checkLarkCli>): string {
+  return status.available ? `available (${status.version})` : `unavailable (${status.version})`;
 }
 
 function workspaceUseAction(name: string, contextKey: string): CardAction {

@@ -39,6 +39,7 @@ const localConfigSchema = z.object({
   feishuEncryptKey: z.string().optional(),
   feishuVerificationToken: z.string().optional(),
   grokBin: z.string().optional(),
+  larkCliBin: z.string().optional(),
   dataDir: z.string().optional(),
   defaultWorkspaceRoot: z.string().optional()
 });
@@ -55,6 +56,9 @@ export function loadConfig(projectRoot = process.cwd()): BridgeConfig {
     local.feishuVerificationToken
   );
   const grokBin = readOptionalSetting('GROK_BIN', local.grokBin) ?? 'grok';
+  const larkCliBin = expandHome(
+    readOptionalSetting('LARK_CLI_BIN', local.larkCliBin) ?? defaultLarkCliBin()
+  );
   const dataDir = expandHome(readOptionalSetting('DATA_DIR', local.dataDir) ?? defaultDataDir());
   const defaultWorkspaceRoot = expandHome(
     readOptionalSetting('DEFAULT_WORKSPACE_ROOT', local.defaultWorkspaceRoot) ?? projectRoot
@@ -66,6 +70,7 @@ export function loadConfig(projectRoot = process.cwd()): BridgeConfig {
     feishuEncryptKey,
     feishuVerificationToken,
     grokBin,
+    larkCliBin,
     dataDir,
     defaultWorkspaceRoot,
     access: loadAccessConfig(path.join(projectRoot, 'config', 'access.json')),
@@ -77,6 +82,11 @@ export function loadConfig(projectRoot = process.cwd()): BridgeConfig {
 
 export function defaultDataDir(): string {
   return '~/.grok-lark-bridge';
+}
+
+export function defaultLarkCliBin(): string {
+  const localBin = path.join(process.env.HOME ?? '', '.local', 'bin', 'lark-cli');
+  return fs.existsSync(localBin) ? localBin : 'lark-cli';
 }
 
 export function localConfigPath(): string {

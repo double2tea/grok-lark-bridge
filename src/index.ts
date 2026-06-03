@@ -20,6 +20,7 @@ async function main(): Promise<void> {
     const api = new FeishuApi(config);
     const grok = new GrokAcpBackend(
       config.grokBin,
+      config.larkCliBin,
       process.cwd(),
       (binding) => {
         store.setNativeSessionIdByGrokSessionId(binding.grokSessionId, binding.nativeSessionId);

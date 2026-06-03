@@ -8,6 +8,7 @@ import {
   loadPermissionConfig,
   localConfigPath
 } from './config.js';
+import { checkLarkCli } from './lark-cli.js';
 import { enabledTools, missingToolScopes } from './permissions.js';
 import { expandHome } from './utils.js';
 
@@ -67,6 +68,14 @@ export function runDoctor(projectRoot = process.cwd()): readonly DoctorCheck[] {
     name: 'Grok CLI',
     ok: grokStatus === 'available',
     detail: grokStatus
+  });
+  const larkCliBin =
+    readEnv(env, 'LARK_CLI_BIN') ?? process.env.LARK_CLI_BIN ?? local.larkCliBin ?? 'lark-cli';
+  const larkCliStatus = checkLarkCli(larkCliBin);
+  checks.push({
+    name: 'Lark CLI',
+    ok: larkCliStatus.available,
+    detail: `${larkCliStatus.version}; ${larkCliStatus.auth}`
   });
 
   const dataDir = expandHome(
