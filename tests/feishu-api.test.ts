@@ -164,6 +164,43 @@ describe('FeishuApi', () => {
     ]);
   });
 
+  it('renders report-like analysis with collapsed detail sections', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: [
+        '好的，已找到你的剪辑表格。',
+        '',
+        '1. 结论 - 找到唯一强匹配，当前重点是待收款和备份健康。',
+        '2. 关键发现 - 活跃项目约 8 个 - 待收款项目集中在商业项目 - 备份整体正常。',
+        '3. 项目明细 - 0406_一加手机，待收款，报价 110000，待收 110000 - 0508_肯德基鸡翅 PK，待收款，报价 10000 - 0516_乐堡口播，进行中，3000 - 0521_林内，进行中，13000 - 0928_时差岛，已交付，12000 - 1209_麦当劳，已交付，6000 - 1216_温州丽锦会所，待收款，4000',
+        '4. 下一步 - 我可以继续列出高风险项目，或按客户/状态/金额做筛选。'
+      ].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const body = asRecord(card.body);
+    const elements = asArray(body.elements);
+
+    expect(card.schema).toBe('2.0');
+    expect(asRecord(elements[0]).content).toBe('好的，已找到你的剪辑表格。');
+    expect(asRecord(elements[1]).content).toContain('**1. 结论**');
+    expect(asRecord(elements[2]).content).toContain('**2. 关键发现**');
+
+    const detailPanel = asRecord(elements[3]);
+    const header = asRecord(detailPanel.header);
+    const title = asRecord(header.title);
+    const panelElements = asArray(detailPanel.elements);
+
+    expect(detailPanel.tag).toBe('collapsible_panel');
+    expect(title.content).toBe('3. 项目明细');
+    expect(asRecord(panelElements[0]).content).toContain('- 0508_肯德基鸡翅 PK');
+    expect(asRecord(elements[4]).content).toContain('**4. 下一步**');
+  });
+
   it('sends card replies in the source thread', async () => {
     const api = new TestFeishuApi();
 

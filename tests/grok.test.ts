@@ -758,8 +758,9 @@ rl.on('line', (line) => {
     const prompt = message.params.prompt[0].text;
     const hasSearchFirstPolicy = prompt.includes('first search visible docs');
     const hasChoicePolicy = prompt.includes('ask the user to choose from concise candidates');
+    const hasReportPolicy = prompt.includes('use a mobile-friendly report shape');
     const hasOldIdentifierPolicy = prompt.includes('ask for that identifier instead of guessing');
-    const text = hasSearchFirstPolicy && hasChoicePolicy && !hasOldIdentifierPolicy
+    const text = hasSearchFirstPolicy && hasChoicePolicy && hasReportPolicy && !hasOldIdentifierPolicy
       ? 'prompt-policy-ok'
       : 'prompt-policy-fail';
     send({

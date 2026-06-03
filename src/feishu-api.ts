@@ -343,6 +343,20 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
     };
   }
 
+  if (hasSchema2Element(bodyElements)) {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true, update_multi: true },
+      header: {
+        title: { tag: 'plain_text', content: update.title },
+        template: cardTemplate(update.status)
+      },
+      body: {
+        elements: [...bodyElements, ...buildActions(update.actions ?? [])]
+      }
+    };
+  }
+
   return {
     config: { wide_screen_mode: true, update_multi: true },
     header: {
@@ -354,7 +368,12 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
 }
 
 function buildBodyElements(body: string): readonly Record<string, unknown>[] {
-  return splitMarkdownBody(truncate(sanitizeForCard(body), 8000)).map((content) => ({
+  const normalized = normalizeMarkdownBody(truncate(sanitizeForCard(body), 8000));
+  const reportElements = buildReportElements(normalized);
+  if (reportElements.length > 0) {
+    return reportElements;
+  }
+  return splitMarkdownBody(normalized).map((content) => ({
     tag: 'markdown',
     content
   }));
@@ -426,11 +445,26 @@ function splitMarkdownBody(body: string): readonly string[] {
 }
 
 function normalizeMarkdownBody(body: string): string {
-  return body
+  const normalizedHeadings = body
     .replace(/\r\n?/gu, '\n')
-    .replace(/([^\n])\s*(#{1,6})(?=\S)/gu, '$1\n\n$2')
-    .replace(/^(#{1,6})(\S)/gmu, '$1 $2')
+    .replace(/([^\n#])[^\S\n]*(#{1,6})(?=\S)/gu, '$1\n\n$2')
+    .replace(/^(#{1,6})([^#\s])/gmu, '$1 $2')
     .trim();
+  return insertInlineReportBreaks(normalizedHeadings).trim();
+}
+
+function insertInlineReportBreaks(body: string): string {
+  return body
+    .split('\n')
+    .map((line) => {
+      if (line.trimStart().startsWith('#')) {
+        return line;
+      }
+      return line
+        .replace(/([^\n])\s+(\d{1,2}[.、]\s+\S)/gu, '$1\n\n$2')
+        .replace(/\s+-\s+/gu, '\n- ');
+    })
+    .join('\n');
 }
 
 function isMarkdownHeading(line: string): boolean {
@@ -465,6 +499,140 @@ function splitLongMarkdownBlock(content: string, maxLength: number): readonly st
     chunks.push(current);
   }
   return chunks;
+}
+
+interface ReportSection {
+  readonly title: string;
+  readonly content: string;
+}
+
+function buildReportElements(body: string): readonly Record<string, unknown>[] {
+  const sections = parseReportSections(body);
+  if (sections.filter((section) => section.title).length < 2) {
+    return [];
+  }
+
+  const elements: Record<string, unknown>[] = [];
+  for (const section of sections) {
+    if (section.title === '') {
+      elements.push(...markdownElements(section.content));
+      continue;
+    }
+    if (shouldCollapseReportSection(section)) {
+      elements.push(buildCollapsibleMarkdownPanel(section.title, section.content));
+      continue;
+    }
+    elements.push(...markdownElements(`**${section.title}**\n${section.content}`.trim()));
+  }
+  return elements;
+}
+
+function parseReportSections(body: string): readonly ReportSection[] {
+  const sections: ReportSection[] = [];
+  let currentTitle = '';
+  let currentLines: string[] = [];
+
+  const flush = (): void => {
+    const content = currentLines.join('\n').trim();
+    if (currentTitle || content) {
+      sections.push({ title: currentTitle, content });
+    }
+    currentLines = [];
+  };
+
+  for (const line of body.split('\n')) {
+    const sectionStart = parseSectionStart(line);
+    if (sectionStart) {
+      flush();
+      currentTitle = sectionStart.title;
+      currentLines = sectionStart.rest ? [sectionStart.rest] : [];
+      continue;
+    }
+    currentLines.push(line);
+  }
+  flush();
+  return sections.filter((section) => section.title || section.content);
+}
+
+function parseSectionStart(line: string): { readonly title: string; readonly rest: string } | null {
+  const trimmed = line.trim();
+  const heading = /^(#{1,6})\s+(.+)$/u.exec(trimmed);
+  if (heading) {
+    return { title: heading[2].trim(), rest: '' };
+  }
+
+  const numbered = /^(\d{1,2}[.、])\s*(.+)$/u.exec(trimmed);
+  if (!numbered) {
+    return null;
+  }
+
+  const raw = `${numbered[1]} ${numbered[2]}`.trim();
+  const split = splitNumberedSection(raw);
+  return { title: split.title, rest: split.rest };
+}
+
+function splitNumberedSection(line: string): { readonly title: string; readonly rest: string } {
+  const separators = [' - ', '：', ':'];
+  for (const separator of separators) {
+    const index = line.indexOf(separator);
+    if (index > 8 && index < 80) {
+      return {
+        title: line.slice(0, index).trim(),
+        rest: line.slice(index + separator.length).trim()
+      };
+    }
+  }
+  return { title: line, rest: '' };
+}
+
+function shouldCollapseReportSection(section: ReportSection): boolean {
+  if (isPriorityReportSection(section.title)) {
+    return section.content.length > 2200;
+  }
+  return (
+    section.content.length > 700 ||
+    /明细|字段|记录|列表|日志|原始|过程|结构|数据分析/u.test(section.title)
+  );
+}
+
+function isPriorityReportSection(title: string): boolean {
+  return /结论|摘要|关键发现|风险|异常|建议|下一步/u.test(title);
+}
+
+function markdownElements(content: string): readonly Record<string, unknown>[] {
+  return splitLongMarkdownBlock(content.trim(), 1800).map((chunk) => ({
+    tag: 'markdown',
+    content: chunk
+  }));
+}
+
+function buildCollapsibleMarkdownPanel(title: string, content: string): Record<string, unknown> {
+  return {
+    tag: 'collapsible_panel',
+    expanded: false,
+    header: {
+      title: {
+        tag: 'markdown',
+        content: title
+      },
+      vertical_align: 'center',
+      icon: {
+        tag: 'standard_icon',
+        token: 'down-small-ccm_outlined',
+        size: '16px 16px'
+      },
+      icon_position: 'follow_text',
+      icon_expanded_angle: -180
+    },
+    border: { color: 'grey', corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
+    elements: markdownElements(content).map((element) => ({ ...element, text_size: 'notation' }))
+  };
+}
+
+function hasSchema2Element(elements: readonly Record<string, unknown>[]): boolean {
+  return elements.some((element) => element.tag === 'collapsible_panel');
 }
 
 function buildProcessPanel(update: FeishuCardUpdate): Record<string, unknown> | null {
