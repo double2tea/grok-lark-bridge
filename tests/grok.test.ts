@@ -471,6 +471,37 @@ describe('ACP client methods', () => {
     }
   });
 
+  it('guides Feishu Drive and bitable requests through search before asking for tokens', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-prompt-policy-'));
+    const fakeGrok = path.join(dir, 'fake-grok-prompt-policy.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokPromptPolicyScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const backend = new GrokAcpBackend(fakeGrok, dir);
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: '看看我的项目多维表格',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'prompt-policy-ok' });
+    } finally {
+      backend.close();
+    }
+  });
+
   it('loads a persisted native ACP session before prompting after restart', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-load-'));
     const fakeGrok = path.join(dir, 'fake-grok-load.mjs');
@@ -694,6 +725,54 @@ rl.on('line', (line) => {
       }
     });
     send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokPromptPolicyScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'sess_prompt_policy' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    const prompt = message.params.prompt[0].text;
+    const hasSearchFirstPolicy = prompt.includes('first search visible docs');
+    const hasChoicePolicy = prompt.includes('ask the user to choose from concise candidates');
+    const hasOldIdentifierPolicy = prompt.includes('ask for that identifier instead of guessing');
+    const text = hasSearchFirstPolicy && hasChoicePolicy && !hasOldIdentifierPolicy
+      ? 'prompt-policy-ok'
+      : 'prompt-policy-fail';
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: 'sess_prompt_policy',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text }
+        }
+      }
+    });
+    send({ id: message.id, result: { stopReason: 'end_turn' } });
   }
 });
 `;
