@@ -201,6 +201,78 @@ describe('FeishuApi', () => {
     expect(asRecord(elements[4]).content).toContain('**4. 下一步**');
   });
 
+  it('renders fenced grok_lark_card JSON as a semantic report card', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: [
+        '```grok_lark_card',
+        JSON.stringify({
+          type: 'report',
+          title: '剪辑表格分析',
+          summary: ['今年收入达到或超过 2025 年水平', '待收款集中在 3 个项目'],
+          sections: [
+            {
+              title: '关键发现',
+              items: ['报价 113k，已收 59k，待收 54k', '2026 项目仍有报价缺口'],
+              collapsed: false
+            },
+            {
+              title: '项目明细',
+              items: [
+                '0406_一加手机：待收 110000',
+                '0508_肯德基鸡翅 PK：待收 10000',
+                '0521_林内：进行中 13000'
+              ],
+              collapsed: true
+            }
+          ]
+        }),
+        '```'
+      ].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const body = asRecord(card.body);
+    const elements = asArray(body.elements);
+
+    expect(card.schema).toBe('2.0');
+    expect(asRecord(elements[0]).content).toBe('**剪辑表格分析**');
+    expect(asRecord(elements[1]).content).toContain('**摘要**');
+    expect(asRecord(elements[2]).content).toContain('**关键发现**');
+
+    const detailPanel = asRecord(elements[3]);
+    const header = asRecord(detailPanel.header);
+    const title = asRecord(header.title);
+    const panelElements = asArray(detailPanel.elements);
+
+    expect(detailPanel.tag).toBe('collapsible_panel');
+    expect(title.content).toBe('项目明细');
+    expect(asRecord(panelElements[0]).content).toContain('- 0508_肯德基鸡翅 PK');
+  });
+
+  it('falls back to markdown when grok_lark_card JSON is invalid', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: ['```grok_lark_card', '{bad json}', '```', '普通回复'].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const elements = asArray(card.elements);
+    const renderedText = JSON.stringify(elements);
+
+    expect(card.schema).toBeUndefined();
+    expect(renderedText).toContain('普通回复');
+    expect(renderedText).not.toContain('{bad json}');
+  });
+
   it('keeps ordinary numbered lists as plain markdown instead of report cards', async () => {
     const api = new TestFeishuApi();
 

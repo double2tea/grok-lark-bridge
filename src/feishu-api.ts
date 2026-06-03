@@ -84,6 +84,7 @@ const messageCreateResponseSchema = z.object({
 });
 const feishuRequestTimeoutMs = 15000;
 const feishuUploadTimeoutMs = 120000;
+const structuredCardBlockPattern = /```grok_lark_card\s*([\s\S]*?)```/u;
 
 export class FeishuApi implements FeishuApiPort {
   private readonly client: lark.Client;
@@ -368,7 +369,13 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
 }
 
 function buildBodyElements(body: string): readonly Record<string, unknown>[] {
-  const normalized = normalizeMarkdownBody(truncate(sanitizeForCard(body), 8000));
+  const structuredElements = buildStructuredCardElements(body);
+  if (structuredElements.length > 0) {
+    return structuredElements;
+  }
+
+  const fallbackBody = removeStructuredCardBlocks(body).trim() || body;
+  const normalized = normalizeMarkdownBody(truncate(sanitizeForCard(fallbackBody), 8000));
   const reportElements = buildReportElements(normalizeReportBody(normalized));
   if (reportElements.length > 0) {
     return reportElements;
@@ -639,6 +646,149 @@ function splitLongMarkdownBlock(content: string, maxLength: number): readonly st
 interface ReportSection {
   readonly title: string;
   readonly content: string;
+}
+
+interface StructuredCardReport {
+  readonly type: 'report';
+  readonly title: string;
+  readonly summary: readonly string[];
+  readonly sections: readonly StructuredCardSection[];
+}
+
+interface StructuredCardSection {
+  readonly title: string;
+  readonly text: string;
+  readonly items: readonly string[];
+  readonly collapsed: boolean;
+}
+
+function buildStructuredCardElements(body: string): readonly Record<string, unknown>[] {
+  const report = parseStructuredCardReport(body);
+  if (!report) {
+    return [];
+  }
+  return renderStructuredCardReport(report);
+}
+
+function parseStructuredCardReport(body: string): StructuredCardReport | null {
+  const match = structuredCardBlockPattern.exec(body);
+  if (!match) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(match[1]) as unknown;
+    return readStructuredCardReport(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function removeStructuredCardBlocks(body: string): string {
+  return body.replace(structuredCardBlockPattern, '').trim();
+}
+
+function readStructuredCardReport(value: unknown): StructuredCardReport | null {
+  if (!isRecordValue(value) || value.type !== 'report') {
+    return null;
+  }
+
+  const sections = readStructuredCardSections(value.sections);
+  const summary = readStringList(value.summary);
+  const title = readString(value.title);
+  if (!title && summary.length === 0 && sections.length === 0) {
+    return null;
+  }
+
+  return { type: 'report', title, summary, sections };
+}
+
+function readStructuredCardSections(value: unknown): readonly StructuredCardSection[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((item): readonly StructuredCardSection[] => {
+    if (!isRecordValue(item)) {
+      return [];
+    }
+
+    const title = readString(item.title);
+    if (!title) {
+      return [];
+    }
+
+    return [
+      {
+        title,
+        text: readString(item.text),
+        items: readStringList(item.items),
+        collapsed: item.collapsed === true
+      }
+    ];
+  });
+}
+
+function readStringList(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map(cleanStructuredText)
+    .filter((item) => item);
+}
+
+function readString(value: unknown): string {
+  return typeof value === 'string' ? cleanStructuredText(value) : '';
+}
+
+function cleanStructuredText(value: string): string {
+  return truncate(sanitizeForCard(value), 1800).trim();
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function renderStructuredCardReport(
+  report: StructuredCardReport
+): readonly Record<string, unknown>[] {
+  const elements: Record<string, unknown>[] = [];
+  if (report.title) {
+    elements.push(...markdownElements(`**${report.title}**`));
+  }
+  if (report.summary.length > 0) {
+    elements.push(...markdownElements(`**摘要**\n${toMarkdownList(report.summary)}`));
+  }
+
+  for (const section of report.sections) {
+    const content = structuredSectionContent(section);
+    if (!content) {
+      continue;
+    }
+    if (section.collapsed) {
+      elements.push(buildCollapsibleMarkdownPanel(section.title, content));
+      continue;
+    }
+    elements.push(...markdownElements(`**${section.title}**\n${content}`));
+  }
+
+  return elements;
+}
+
+function structuredSectionContent(section: StructuredCardSection): string {
+  return [section.text, toMarkdownList(section.items)]
+    .filter((part) => part)
+    .join('\n')
+    .trim();
+}
+
+function toMarkdownList(items: readonly string[]): string {
+  return items
+    .filter((item) => item)
+    .map((item) => `- ${item}`)
+    .join('\n');
 }
 
 function shouldCollapseReportSection(section: ReportSection): boolean {
