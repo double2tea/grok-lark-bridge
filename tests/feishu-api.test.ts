@@ -132,6 +132,38 @@ describe('FeishuApi', () => {
     expect(asRecord((elements as readonly unknown[])[1]).content).toBe('文本输出见下方消息。');
   });
 
+  it('renders long markdown answers as structured card blocks', async () => {
+    const api = new TestFeishuApi();
+
+    await api.sendCard('chat_1', {
+      title: 'Grok 已回复',
+      status: 'success',
+      body: [
+        '权限检查结果###1.桥接自身权限',
+        '- config/feishu-permissions.json：仅 tenant 基础权限',
+        '- config/access.json：enableAdvancedOpenApiTool=false',
+        '',
+        '```',
+        'npm run setup:lark-mcp',
+        '```',
+        '',
+        '下一步继续授权。'
+      ].join('\n')
+    });
+
+    const data = asRecord(api.requests[0]?.data);
+    const card = asRecord(JSON.parse(String(data.content)));
+    const elements = asArray(card.elements);
+
+    expect(elements.map((element) => asRecord(element).content)).toEqual([
+      '权限检查结果',
+      '**1.桥接自身权限**',
+      '- config/feishu-permissions.json：仅 tenant 基础权限\n- config/access.json：enableAdvancedOpenApiTool=false',
+      '```\nnpm run setup:lark-mcp\n```',
+      '下一步继续授权。'
+    ]);
+  });
+
   it('sends card replies in the source thread', async () => {
     const api = new TestFeishuApi();
 
@@ -182,4 +214,11 @@ function asRecord(value: unknown): Record<string, unknown> {
     throw new Error('expected record');
   }
   return value as Record<string, unknown>;
+}
+
+function asArray(value: unknown): readonly unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error('expected array');
+  }
+  return value;
 }

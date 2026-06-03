@@ -327,10 +327,7 @@ export class FeishuApi implements FeishuApiPort {
 }
 
 function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
-  const bodyElement = {
-    tag: 'markdown',
-    content: truncate(sanitizeForCard(update.body), 8000)
-  };
+  const bodyElements = buildBodyElements(update.body);
   const processPanel = buildProcessPanel(update);
   if (processPanel) {
     return {
@@ -341,7 +338,7 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
         template: cardTemplate(update.status)
       },
       body: {
-        elements: [processPanel, bodyElement, ...buildActions(update.actions ?? [])]
+        elements: [processPanel, ...bodyElements, ...buildActions(update.actions ?? [])]
       }
     };
   }
@@ -352,8 +349,122 @@ function buildCard(update: FeishuCardUpdate): Record<string, unknown> {
       title: { tag: 'plain_text', content: update.title },
       template: cardTemplate(update.status)
     },
-    elements: [bodyElement, ...buildActions(update.actions ?? [])]
+    elements: [...bodyElements, ...buildActions(update.actions ?? [])]
   };
+}
+
+function buildBodyElements(body: string): readonly Record<string, unknown>[] {
+  return splitMarkdownBody(truncate(sanitizeForCard(body), 8000)).map((content) => ({
+    tag: 'markdown',
+    content
+  }));
+}
+
+function splitMarkdownBody(body: string): readonly string[] {
+  const normalized = normalizeMarkdownBody(body);
+  if (!normalized.trim()) {
+    return ['（无输出）'];
+  }
+
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let currentKind: 'paragraph' | 'list' | 'code' | null = null;
+  let inCodeBlock = false;
+
+  const flush = (): void => {
+    const content = current.join('\n').trim();
+    if (content) {
+      chunks.push(...splitLongMarkdownBlock(content, 1800));
+    }
+    current = [];
+    currentKind = null;
+  };
+
+  for (const line of normalized.split('\n')) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('```')) {
+      if (!inCodeBlock) {
+        flush();
+        inCodeBlock = true;
+        currentKind = 'code';
+        current.push(line);
+        continue;
+      }
+      current.push(line);
+      inCodeBlock = false;
+      flush();
+      continue;
+    }
+
+    if (inCodeBlock) {
+      current.push(line);
+      continue;
+    }
+
+    if (!trimmed) {
+      flush();
+      continue;
+    }
+
+    if (isMarkdownHeading(trimmed)) {
+      flush();
+      chunks.push(renderHeading(trimmed));
+      continue;
+    }
+
+    const nextKind = isMarkdownListItem(trimmed) ? 'list' : 'paragraph';
+    if (currentKind && currentKind !== nextKind) {
+      flush();
+    }
+    currentKind = nextKind;
+    current.push(line);
+  }
+
+  flush();
+  return chunks.length > 0 ? chunks : ['（无输出）'];
+}
+
+function normalizeMarkdownBody(body: string): string {
+  return body
+    .replace(/\r\n?/gu, '\n')
+    .replace(/([^\n])\s*(#{1,6})(?=\S)/gu, '$1\n\n$2')
+    .replace(/^(#{1,6})(\S)/gmu, '$1 $2')
+    .trim();
+}
+
+function isMarkdownHeading(line: string): boolean {
+  return /^#{1,6}\s+\S/u.test(line);
+}
+
+function renderHeading(line: string): string {
+  return `**${line.replace(/^#{1,6}\s+/u, '').trim()}**`;
+}
+
+function isMarkdownListItem(line: string): boolean {
+  return /^([-*+]|\d+\.)\s+\S/u.test(line);
+}
+
+function splitLongMarkdownBlock(content: string, maxLength: number): readonly string[] {
+  if (content.length <= maxLength) {
+    return [content];
+  }
+
+  const chunks: string[] = [];
+  let current = '';
+  for (const line of content.split('\n')) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > maxLength && current) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) {
+    chunks.push(current);
+  }
+  return chunks;
 }
 
 function buildProcessPanel(update: FeishuCardUpdate): Record<string, unknown> | null {
