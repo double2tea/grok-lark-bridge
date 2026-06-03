@@ -48,6 +48,11 @@ interface OutputTextState {
   text: string;
 }
 
+interface PromptPreparation {
+  readonly prompt: string;
+  readonly allowedLocalRoots: readonly string[];
+}
+
 interface MessageDeliveryTarget {
   readonly chatId: string;
   readonly reply?: MessageReplyOptions;
@@ -116,11 +121,14 @@ export class RuntimeOrchestrator {
     this.store.markProcessedEvent(action.eventId);
 
     if (action.action === 'stop_run' && action.contextKey) {
+      const session = this.sessions.getOrCreateByKey(action.contextKey);
+      this.assertCardActionAllowed(action, session);
       this.stopRun(action.contextKey);
       return;
     }
     if (action.action === 'run_command' && action.command && action.contextKey) {
       const session = this.sessions.getOrCreateByKey(action.contextKey);
+      this.assertCardActionAllowed(action, session);
       await this.executeCommand(
         {
           eventId: action.eventId,
@@ -482,11 +490,12 @@ export class RuntimeOrchestrator {
     };
 
     try {
-      const prompt = await this.preparePrompt(message);
+      const prepared = await this.preparePrompt(message);
       const code = await this.grok.run(
         {
-          prompt,
+          prompt: prepared.prompt,
           cwd: session.cwd,
+          allowedLocalRoots: prepared.allowedLocalRoots,
           sessionId: session.grokSessionId,
           nativeSessionId: session.nativeSessionId,
           contextKey: session.key,
@@ -540,10 +549,12 @@ export class RuntimeOrchestrator {
     }
   }
 
-  private async preparePrompt(message: IncomingMessage): Promise<string> {
+  private async preparePrompt(message: IncomingMessage): Promise<PromptPreparation> {
     if (message.attachments.length === 0) {
-      return message.text;
+      const session = this.sessions.getOrCreateFromMessage(message);
+      return { prompt: message.text, allowedLocalRoots: [session.cwd] };
     }
+    const session = this.sessions.getOrCreateFromMessage(message);
     const targetDir = path.join(this.config.dataDir, 'inbound-media', message.messageId);
     const downloaded: string[] = [];
     for (const attachment of message.attachments) {
@@ -557,12 +568,15 @@ export class RuntimeOrchestrator {
       downloaded.push(`${attachment.kind}: ${filePath}`);
     }
     const text = message.text.trim();
-    return [
-      text || '用户发送了附件。',
-      '',
-      '用户随消息上传了以下附件，已下载到本地。需要分析图片、视频、音频或文件内容时，直接读取这些本地路径：',
-      ...downloaded.map((line) => `- ${line}`)
-    ].join('\n');
+    return {
+      prompt: [
+        text || '用户发送了附件。',
+        '',
+        '用户随消息上传了以下附件，已下载到本地。需要分析图片、视频、音频或文件内容时，直接读取这些本地路径：',
+        ...downloaded.map((line) => `- ${line}`)
+      ].join('\n'),
+      allowedLocalRoots: [session.cwd, targetDir]
+    };
   }
 
   private enqueue(
@@ -748,6 +762,15 @@ export class RuntimeOrchestrator {
       return;
     }
     console.info(message);
+  }
+
+  private assertCardActionAllowed(action: IncomingCardAction, session: SessionRecord): void {
+    if (action.chatId && action.chatId !== session.chatId) {
+      throw new Error('Card action chat does not match session.');
+    }
+    if (!this.sessions.isAdmin(action.operatorOpenId)) {
+      throw new Error('Only admins can use bridge card actions.');
+    }
   }
 }
 

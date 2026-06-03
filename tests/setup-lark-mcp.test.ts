@@ -33,8 +33,6 @@ describe('setup-lark-mcp', () => {
       'mcp',
       '-a',
       'cli_test',
-      '-s',
-      'secret_test',
       '--oauth',
       '--token-mode',
       'user_access_token'
@@ -53,12 +51,11 @@ describe('setup-lark-mcp', () => {
       '--args=mcp',
       '--args=-a',
       '--args=cli_test',
-      '--args=-s',
-      '--args=secret_test',
       '--args=--oauth',
       '--args=--token-mode',
       '--args=user_access_token'
     ]);
+    expect(buildGrokMcpAddArgs(config).join(' ')).not.toContain('secret_test');
   });
 
   it('builds an official-only MCP config', () => {
@@ -66,10 +63,15 @@ describe('setup-lark-mcp', () => {
       mcpServers: {
         'lark-mcp': {
           command: 'npx',
-          args: buildLarkMcpServerArgs(config)
+          args: buildLarkMcpServerArgs(config),
+          env: {
+            FEISHU_APP_ID: 'cli_test',
+            FEISHU_APP_SECRET: '${FEISHU_APP_SECRET}'
+          }
         }
       }
     });
+    expect(JSON.stringify(buildCombinedMcpConfig('/repo', config))).not.toContain('secret_test');
   });
 
   it('writes generated config under the bridge data directory', () => {

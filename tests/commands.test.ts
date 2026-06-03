@@ -54,12 +54,12 @@ describe('CommandRouter', () => {
     store.close();
   });
 
-  it('allows approval policy changes when admin list is empty', () => {
+  it('rejects approval policy changes when admin list is empty', () => {
     const { router, message, session, store } = makeRouter([]);
 
-    const result = router.handle({ ...message, text: '/approval auto' }, session);
-
-    expect(result.text).toBe('Approval policy set to auto');
+    expect(() => router.handle({ ...message, text: '/approval auto' }, session)).toThrow(
+      'Only admins can change approval policy.'
+    );
     store.close();
   });
 
@@ -209,7 +209,7 @@ function makeRouter(
     defaultWorkspaceRoot: dir,
     access: {
       adminOpenIds,
-      allowedChatIds: [],
+      allowedChatIds: ['chat_1'],
       defaultApprovalPolicy: 'auto',
       approvalOverrides: [],
       enableAdvancedOpenApiTool: false
@@ -239,16 +239,16 @@ function makeRouter(
 }
 
 function fakeLarkCliScript(): string {
-  return `#!/usr/bin/env node
-if (process.argv.includes('--version')) {
-  process.stdout.write('lark-cli version test\\n');
-  process.exit(0);
-}
-if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
-  process.stdout.write('{"identity":"user"}\\n');
-  process.exit(0);
-}
-process.stderr.write('unexpected args: ' + process.argv.slice(2).join(' '));
-process.exit(1);
+  return `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'lark-cli version test\\n'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  printf '{"identity":"user"}\\n'
+  exit 0
+fi
+printf 'unexpected args: %s\\n' "$*" >&2
+exit 1
 `;
 }

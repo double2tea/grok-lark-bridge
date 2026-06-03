@@ -117,6 +117,7 @@ export interface SessionEventRecord {
 export interface GrokRunInput {
   readonly prompt: string;
   readonly cwd: string;
+  readonly allowedLocalRoots?: readonly string[];
   readonly sessionId: string;
   readonly nativeSessionId?: string | null;
   readonly contextKey: string;
@@ -185,6 +186,7 @@ export interface FeishuToolResult {
 export interface IncomingCardAction {
   readonly eventId: string;
   readonly action: string;
+  readonly chatId?: string;
   readonly approvalId?: string;
   readonly command?: string;
   readonly contextKey?: string;

@@ -79,8 +79,8 @@ function message(overrides: Partial<IncomingMessage>): IncomingMessage {
 }
 
 const access: AccessConfig = {
-  adminOpenIds: [],
-  allowedChatIds: [],
+  adminOpenIds: ['ou_1'],
+  allowedChatIds: ['chat_1'],
   defaultApprovalPolicy: 'auto',
   approvalOverrides: [],
   enableAdvancedOpenApiTool: false

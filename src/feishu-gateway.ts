@@ -105,6 +105,7 @@ export function normalizeCardActionEvent(data: unknown): IncomingCardAction {
   return {
     eventId,
     action: readRequired(value, 'action'),
+    chatId: readString(message, 'chat_id'),
     approvalId: readString(value, 'approval_id'),
     command: readString(value, 'command'),
     contextKey: readString(value, 'context_key'),

@@ -31,6 +31,8 @@ export class GrokRunAbortedError extends Error {
 
 interface ActiveRun {
   readonly onEvent: (event: GrokEvent) => Promise<void>;
+  readonly cwd: string;
+  readonly allowedLocalRoots: readonly string[];
   readonly tasks: Promise<void>[];
 }
 
@@ -117,10 +119,12 @@ export class GrokAcpBackend implements GrokBackend {
   constructor(
     private readonly grokBin: string,
     private readonly larkCliBin: string,
-    private readonly projectRoot = process.cwd(),
+    projectRoot = process.cwd(),
     private readonly bindNativeSession?: NativeSessionBinder,
     private readonly recordNativeSessionEvent?: NativeSessionEventRecorder
-  ) {}
+  ) {
+    void projectRoot;
+  }
 
   close(): void {
     const proc = this.proc;
@@ -155,7 +159,15 @@ export class GrokAcpBackend implements GrokBackend {
         await onEvent({ type: 'status', text: sessionStatus });
       }
       const activeSession = session;
-      const active: ActiveRun = { onEvent, tasks: [] };
+      const active: ActiveRun = {
+        onEvent,
+        cwd: activeSession.cwd,
+        allowedLocalRoots: normalizeAllowedRoots([
+          activeSession.cwd,
+          ...(input.allowedLocalRoots ?? [])
+        ]),
+        tasks: []
+      };
       this.activeRuns.set(activeSession.acpSessionId, active);
 
       const abortPromise = new Promise<Record<string, unknown>>((_, reject) => {
@@ -423,13 +435,13 @@ export class GrokAcpBackend implements GrokBackend {
 
   private async resolveClientRequest(method: string, params: unknown): Promise<unknown> {
     if (method === 'fs/read_text_file') {
-      return readAcpTextFile(params);
+      return readAcpTextFile(params, this.allowedRootsForRequest(params));
     }
     if (method === 'session/request_permission') {
       return { outcome: { outcome: 'cancelled' } };
     }
     if (method === 'terminal/create') {
-      return this.createTerminal(params);
+      return this.createTerminal(params, this.activeRunForRequest(params));
     }
     if (method === 'terminal/output') {
       return this.readTerminalOutput(params);
@@ -456,21 +468,23 @@ export class GrokAcpBackend implements GrokBackend {
     this.proc?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code, message } })}\n`);
   }
 
-  private createTerminal(params: unknown): { readonly terminalId: string } {
+  private createTerminal(params: unknown, active: ActiveRun): { readonly terminalId: string } {
     const record = expectRecord(params, 'terminal params');
     const command = readString(record, 'command');
     if (!command) {
       throw new Error('terminal/create requires command');
     }
+    assertTerminalCommandAllowed(command, this.larkCliBin);
     const args = readStringArray(record.args) ?? [];
-    const cwd = readString(record, 'cwd') ?? this.projectRoot;
+    const cwd = readString(record, 'cwd') ?? active.cwd;
     if (!path.isAbsolute(cwd)) {
       throw new Error('terminal/create cwd must be absolute');
     }
+    assertPathInAllowedRoots(cwd, active.allowedLocalRoots, 'terminal/create cwd');
     const outputByteLimit = readPositiveInteger(record, 'outputByteLimit') ?? 1024 * 1024;
     const proc = spawn(command, args, {
       cwd,
-      env: { ...process.env, ...readEnv(record.env) },
+      env: mergeAllowedEnv(process.env, readEnv(record.env)),
       stdio: ['ignore', 'pipe', 'pipe']
     });
     const terminalId = `term_${String(this.nextTerminalId)}`;
@@ -601,6 +615,23 @@ export class GrokAcpBackend implements GrokBackend {
     if (event) {
       active.tasks.push(active.onEvent(event));
     }
+  }
+
+  private activeRunForRequest(params: unknown): ActiveRun {
+    const record = expectRecord(params, 'ACP client request params');
+    const sessionId = readString(record, 'sessionId');
+    if (!sessionId) {
+      throw new Error('ACP client request requires sessionId');
+    }
+    const active = this.activeRuns.get(sessionId);
+    if (!active) {
+      throw new Error(`No active run for ACP session: ${sessionId}`);
+    }
+    return active;
+  }
+
+  private allowedRootsForRequest(params: unknown): readonly string[] {
+    return this.activeRunForRequest(params).allowedLocalRoots;
   }
 }
 
@@ -1288,7 +1319,10 @@ function readJsonRpcId(record: Record<string, unknown>, key: string): JsonRpcId 
   return typeof value === 'number' || typeof value === 'string' ? value : undefined;
 }
 
-export async function readAcpTextFile(params: unknown): Promise<{ readonly content: string }> {
+export async function readAcpTextFile(
+  params: unknown,
+  allowedRoots?: readonly string[]
+): Promise<{ readonly content: string }> {
   const record = expectRecord(params, 'fs/read_text_file params');
   const filePath = readString(record, 'path');
   if (!filePath) {
@@ -1296,6 +1330,9 @@ export async function readAcpTextFile(params: unknown): Promise<{ readonly conte
   }
   if (!path.isAbsolute(filePath)) {
     throw new Error('fs/read_text_file path must be absolute');
+  }
+  if (allowedRoots) {
+    assertPathInAllowedRoots(filePath, allowedRoots, 'fs/read_text_file path');
   }
   const content = await fs.promises.readFile(filePath, 'utf8');
   const startLine = readPositiveInteger(record, 'line') ?? readPositiveInteger(record, 'startLine');
@@ -1355,6 +1392,86 @@ function readEnv(value: unknown): NodeJS.ProcessEnv {
     env[name] = envValue;
   }
   return env;
+}
+
+function normalizeAllowedRoots(roots: readonly string[]): readonly string[] {
+  const normalized = roots.map((root) => normalizeExistingPath(root));
+  return [...new Set(normalized)];
+}
+
+function assertPathInAllowedRoots(
+  targetPath: string,
+  allowedRoots: readonly string[],
+  label: string
+): void {
+  const normalizedTarget = normalizeExistingPath(targetPath);
+  if (allowedRoots.some((root) => isPathInside(normalizedTarget, root))) {
+    return;
+  }
+  throw new Error(`${label} is outside allowed roots: ${targetPath}`);
+}
+
+function assertTerminalCommandAllowed(command: string, allowedCommand: string): void {
+  if (isSameTerminalCommand(command, allowedCommand)) {
+    return;
+  }
+  throw new Error(`terminal/create command is not allowed: ${command}`);
+}
+
+function isSameTerminalCommand(command: string, allowedCommand: string): boolean {
+  if (path.isAbsolute(command) || path.isAbsolute(allowedCommand)) {
+    return normalizeExistingPath(command) === normalizeExistingPath(allowedCommand);
+  }
+  return command === allowedCommand;
+}
+
+function isPathInside(targetPath: string, rootPath: string): boolean {
+  const normalizedRoot = normalizeExistingPath(rootPath);
+  const relative = path.relative(normalizedRoot, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function normalizeExistingPath(targetPath: string): string {
+  return fs.realpathSync.native(targetPath);
+}
+
+function mergeAllowedEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  requestedEnv: NodeJS.ProcessEnv
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of allowedEnvNames()) {
+    const value = baseEnv[name];
+    if (value !== undefined) {
+      env[name] = value;
+    }
+  }
+  for (const [name, value] of Object.entries(requestedEnv)) {
+    if (isAllowedRequestedEnvName(name) && value !== undefined) {
+      env[name] = value;
+    }
+  }
+  return env;
+}
+
+function allowedEnvNames(): readonly string[] {
+  return [
+    'PATH',
+    'HOME',
+    'USER',
+    'LOGNAME',
+    'SHELL',
+    'TMPDIR',
+    'TEMP',
+    'TMP',
+    'LANG',
+    'LC_ALL',
+    'LC_CTYPE'
+  ];
+}
+
+function isAllowedRequestedEnvName(name: string): boolean {
+  return /^(?:PATH|HOME|USER|LOGNAME|SHELL|TMPDIR|TEMP|TMP|LANG|LC_ALL|LC_CTYPE)$/u.test(name);
 }
 
 function trimToUtf8Bytes(value: string, byteLimit: number): string {

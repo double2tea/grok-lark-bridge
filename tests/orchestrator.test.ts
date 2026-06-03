@@ -602,6 +602,44 @@ describe('RuntimeOrchestrator', () => {
 
     expect(api.texts).toContain('Grok 已停止\n本轮运行已手动停止。');
   });
+
+  it('ignores card commands from non-admin operators', async () => {
+    const api = new FakeFeishuApi();
+    const { orchestrator } = createRuntime(api);
+
+    await orchestrator.handleMessage(message('/help', 'evt_help_for_action'));
+    await expect(
+      orchestrator.handleCardAction({
+        eventId: 'evt_card_non_admin',
+        action: 'run_command',
+        chatId: 'chat_1',
+        command: '/status',
+        contextKey: 'chat_1',
+        operatorOpenId: 'ou_other'
+      })
+    ).rejects.toThrow('Only admins can use bridge card actions.');
+
+    expect(api.cards.map((card) => card.title)).not.toContain('Grok 状态');
+  });
+
+  it('rejects card commands from a different chat', async () => {
+    const api = new FakeFeishuApi();
+    const { orchestrator } = createRuntime(api);
+
+    await orchestrator.handleMessage(message('/help', 'evt_help_cross_chat'));
+    await expect(
+      orchestrator.handleCardAction({
+        eventId: 'evt_card_cross_chat',
+        action: 'run_command',
+        chatId: 'chat_other',
+        command: '/status',
+        contextKey: 'chat_1',
+        operatorOpenId: 'ou_1'
+      })
+    ).rejects.toThrow('Card action chat does not match session.');
+
+    expect(api.cards.map((card) => card.title)).not.toContain('Grok 状态');
+  });
 });
 
 function createRuntime(
@@ -622,8 +660,8 @@ function createRuntime(
     dataDir: dir,
     defaultWorkspaceRoot: '/tmp',
     access: {
-      adminOpenIds: [],
-      allowedChatIds: [],
+      adminOpenIds: ['ou_1'],
+      allowedChatIds: ['chat_1'],
       defaultApprovalPolicy: 'auto',
       approvalOverrides: [],
       enableAdvancedOpenApiTool: false

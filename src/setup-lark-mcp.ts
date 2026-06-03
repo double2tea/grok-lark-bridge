@@ -16,7 +16,7 @@ export function buildLarkMcpLoginArgs(
 }
 
 export function buildLarkMcpServerArgs(
-  config: Pick<BridgeConfig, 'feishuAppId' | 'feishuAppSecret'>
+  config: Pick<BridgeConfig, 'feishuAppId'>
 ): readonly string[] {
   return [
     '-y',
@@ -24,8 +24,6 @@ export function buildLarkMcpServerArgs(
     'mcp',
     '-a',
     config.feishuAppId,
-    '-s',
-    config.feishuAppSecret,
     '--oauth',
     '--token-mode',
     'user_access_token'
@@ -54,7 +52,11 @@ export function buildCombinedMcpConfig(
     mcpServers: {
       'lark-mcp': {
         command: 'npx',
-        args: buildLarkMcpServerArgs(config)
+        args: buildLarkMcpServerArgs(config),
+        env: {
+          FEISHU_APP_ID: config.feishuAppId,
+          FEISHU_APP_SECRET: '${FEISHU_APP_SECRET}'
+        }
       }
     }
   };

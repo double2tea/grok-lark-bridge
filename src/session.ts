@@ -75,13 +75,11 @@ export class SessionService {
   }
 
   isAllowed(message: IncomingMessage): boolean {
-    return (
-      this.access.allowedChatIds.length === 0 || this.access.allowedChatIds.includes(message.chatId)
-    );
+    return this.access.allowedChatIds.includes(message.chatId);
   }
 
   isAdmin(openId: string): boolean {
-    return this.access.adminOpenIds.length === 0 || this.access.adminOpenIds.includes(openId);
+    return this.access.adminOpenIds.includes(openId);
   }
 
   changeCwd(session: SessionRecord, cwdInput: string): SessionRecord {

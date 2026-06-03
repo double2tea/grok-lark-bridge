@@ -431,6 +431,17 @@ describe('ACP client methods', () => {
     });
   });
 
+  it('rejects file reads outside allowed roots', async () => {
+    const allowedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-allowed-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-outside-'));
+    const outsideFile = path.join(outsideDir, 'secret.txt');
+    await fs.writeFile(outsideFile, 'secret', 'utf8');
+
+    await expect(readAcpTextFile({ path: outsideFile }, [allowedDir])).rejects.toThrow(
+      'fs/read_text_file path is outside allowed roots'
+    );
+  });
+
   it('responds to agent-initiated file and terminal requests', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-backend-'));
     const file = path.join(dir, 'README.md');
@@ -441,7 +452,7 @@ describe('ACP client methods', () => {
 
     const previousFile = process.env.FAKE_ACP_FILE;
     process.env.FAKE_ACP_FILE = file;
-    const backend = new GrokAcpBackend(fakeGrok, 'lark-cli', dir);
+    const backend = new GrokAcpBackend(fakeGrok, process.execPath, dir);
     const events: GrokEvent[] = [];
     try {
       const code = await backend.run(
@@ -468,6 +479,107 @@ describe('ACP client methods', () => {
       } else {
         process.env.FAKE_ACP_FILE = previousFile;
       }
+    }
+  });
+
+  it('filters secrets out of ACP terminal environments', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-env-'));
+    const fakeGrok = path.join(dir, 'fake-grok-env.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokTerminalEnvScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const previousSecret = process.env.FEISHU_APP_SECRET;
+    process.env.FEISHU_APP_SECRET = 'secret_from_parent';
+    const backend = new GrokAcpBackend(fakeGrok, process.execPath, dir);
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'check env',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'env:unset' });
+    } finally {
+      backend.close();
+      if (previousSecret === undefined) {
+        delete process.env.FEISHU_APP_SECRET;
+      } else {
+        process.env.FEISHU_APP_SECRET = previousSecret;
+      }
+    }
+  });
+
+  it('rejects ACP terminal cwd outside allowed roots', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-terminal-root-'));
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-terminal-outside-'));
+    const fakeGrok = path.join(dir, 'fake-grok-terminal-root.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokTerminalRootScript(outsideDir), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const backend = new GrokAcpBackend(fakeGrok, process.execPath, dir);
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'check cwd',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'terminal-denied' });
+    } finally {
+      backend.close();
+    }
+  });
+
+  it('rejects ACP terminal commands outside the configured allowlist', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-acp-terminal-command-'));
+    const fakeGrok = path.join(dir, 'fake-grok-terminal-command.mjs');
+    await fs.writeFile(fakeGrok, fakeGrokTerminalCommandScript(), 'utf8');
+    await fs.chmod(fakeGrok, 0o755);
+
+    const backend = new GrokAcpBackend(fakeGrok, process.execPath, dir);
+    const events: GrokEvent[] = [];
+    try {
+      const code = await backend.run(
+        {
+          prompt: 'check command',
+          cwd: dir,
+          sessionId: 'bridge_session',
+          contextKey: 'context',
+          requestedByOpenId: 'user'
+        },
+        (event) => {
+          events.push(event);
+          return Promise.resolve();
+        },
+        new AbortController().signal
+      );
+
+      expect(code).toBe(0);
+      expect(events).toContainEqual({ type: 'text', text: 'command-denied' });
+    } finally {
+      backend.close();
     }
   });
 
@@ -628,6 +740,7 @@ function fakeGrokScript(): string {
 import readline from 'node:readline';
 
 const rl = readline.createInterface({ input: process.stdin });
+const scriptDir = new URL('.', import.meta.url).pathname;
 let promptId;
 let fileContent = '';
 let terminalId = '';
@@ -688,7 +801,7 @@ rl.on('line', (line) => {
         sessionId: 'sess_test',
         command: process.execPath,
         args: ['-e', 'process.stdout.write("term-ok")'],
-        cwd: process.cwd()
+        cwd: scriptDir
       }
     });
     return;
@@ -718,6 +831,194 @@ rl.on('line', (line) => {
         update: {
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: 'read:' + fileContent + '; term:' + message.result.output }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokTerminalEnvScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+const scriptDir = new URL('.', import.meta.url).pathname;
+let promptId;
+let terminalId = '';
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'sess_env' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      id: 201,
+      method: 'terminal/create',
+      params: {
+        sessionId: 'sess_env',
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write(process.env.FEISHU_APP_SECRET ?? "unset")'],
+        cwd: scriptDir
+      }
+    });
+    return;
+  }
+  if (message.id === 201) {
+    terminalId = message.result.terminalId;
+    send({ id: 202, method: 'terminal/wait_for_exit', params: { sessionId: 'sess_env', terminalId } });
+    return;
+  }
+  if (message.id === 202) {
+    send({ id: 203, method: 'terminal/output', params: { sessionId: 'sess_env', terminalId } });
+    return;
+  }
+  if (message.id === 203) {
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: 'sess_env',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'env:' + message.result.output }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokTerminalRootScript(outsideDir: string): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'sess_root' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      id: 301,
+      method: 'terminal/create',
+      params: {
+        sessionId: 'sess_root',
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write("bad")'],
+        cwd: ${JSON.stringify(outsideDir)}
+      }
+    });
+    return;
+  }
+  if (message.id === 301) {
+    if (!message.error || !String(message.error.message).includes('outside allowed roots')) {
+      send({ id: promptId, result: { stopReason: 'error' } });
+      return;
+    }
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: 'sess_root',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'terminal-denied' }
+        }
+      }
+    });
+    send({ id: promptId, result: { stopReason: 'end_turn' } });
+  }
+});
+`;
+}
+
+function fakeGrokTerminalCommandScript(): string {
+  return `#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({ input: process.stdin });
+let promptId;
+const scriptDir = new URL('.', import.meta.url).pathname;
+
+function send(message) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\\n');
+}
+
+rl.on('line', (line) => {
+  const message = JSON.parse(line);
+  if (message.method === 'initialize') {
+    send({ id: message.id, result: { protocolVersion: 1, authMethods: [{ id: 'cached_token' }] } });
+    return;
+  }
+  if (message.method === 'authenticate') {
+    send({ id: message.id, result: {} });
+    return;
+  }
+  if (message.method === 'session/new') {
+    send({ id: message.id, result: { sessionId: 'sess_command' } });
+    return;
+  }
+  if (message.method === 'session/prompt') {
+    promptId = message.id;
+    send({
+      id: 401,
+      method: 'terminal/create',
+      params: {
+        sessionId: 'sess_command',
+        command: '/bin/echo',
+        args: ['bad'],
+        cwd: scriptDir
+      }
+    });
+    return;
+  }
+  if (message.id === 401) {
+    if (!message.error || !String(message.error.message).includes('command is not allowed')) {
+      send({ id: promptId, result: { stopReason: 'error' } });
+      return;
+    }
+    send({
+      method: 'session/update',
+      params: {
+        sessionId: 'sess_command',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'command-denied' }
         }
       }
     });
