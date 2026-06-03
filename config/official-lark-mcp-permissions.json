@@ -9,6 +9,7 @@
     ],
     "user": [
       "im:chat:read",
+      "im:chat:readonly",
       "im:chat.members:read",
       "im:message:readonly",
       "wiki:wiki:readonly",
